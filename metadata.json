@@ -1,0 +1,6 @@
+{
+  "name": "Pulmonary Embolism 3D Disease Intelligence",
+  "description": "Interactive multiscale 3D visualization and simulation of pulmonary embolism from thoracic anatomy to fibrin microstructure and hemodynamics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

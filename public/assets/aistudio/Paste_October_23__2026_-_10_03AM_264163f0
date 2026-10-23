@@ -1,0 +1,1201 @@
+# MASTER PRODUCT & ENGINEERING BUILD PROMPT
+## PULMONARY EMBOLISM — IMMERSIVE DISEASE INTELLIGENCE ENGINE
+### Three.js · React Three Fiber · WebXR · Apple Vision Pro · Meta Quest
+
+**Specification:** PE-3D-001  
+**Product category:** Biomedical visualization, computational simulation, spatial research software  
+**Project status:** Research prototype  
+**Primary experience:** Interactive three-dimensional exploration of pulmonary embolism pathology  
+**Display modes:** Desktop 3D, immersive virtual reality, mixed reality, spatial viewing  
+**Technical direction:** Three.js, React Three Fiber, TypeScript, WebGL, optional WebGPU, WebXR, DICOM imaging pipeline, computational geometry
+
+---
+
+# 1. PRODUCT MISSION
+
+Build an immersive biomedical visualization platform that allows users to examine pulmonary embolism from whole-organ anatomy to the microscopic architecture of a blood clot.
+
+The platform must represent the disease as a dynamic biological event rather than a stationary object.
+
+It must help users understand:
+
+1. Where pulmonary embolisms originate and travel.
+2. How clots become lodged in pulmonary arteries.
+3. How fibrin networks, red blood cells, and platelets contribute to clot structure.
+4. How vascular obstruction changes blood flow.
+5. How downstream lung perfusion is affected.
+6. How endogenous fibrinolysis can break down fibrin.
+7. How established therapeutic approaches work.
+8. Which details are directly measured, computationally estimated, or purely illustrative.
+
+The final product must support a spatial experience in which users can inspect an anatomical model from multiple angles, isolate individual disease components, and explore time-dependent simulations.
+
+The system is not a validated diagnostic product, surgical planning instrument, or treatment recommender.
+
+It must not claim to identify actual microscopic clot composition from a CT scan.
+
+## Core thesis
+
+**Can immersive, multiscale visualization connect patient-level pulmonary vascular anatomy with experimentally grounded models of clot microstructure and computational blood-flow behavior, making pulmonary embolism easier to study, teach, and eventually investigate using more sophisticated imaging systems?**
+
+The application should provide a credible foundation for that research.
+
+---
+
+# 2. DESIGN EXPERIENCE
+
+Imagine a clinician or researcher wearing a spatial headset.
+
+A pair of transparent lungs appears approximately at arm's length.
+
+The pulmonary vascular system is visible within the lungs.
+
+A region of obstruction is highlighted in engineering gold.
+
+The user reaches toward that region, selects it, and enlarges the affected artery.
+
+The system smoothly transitions from an anatomical view to a cutaway vessel.
+
+Within the vessel, the user sees a modeled fibrin-rich thrombus containing red blood cells and platelets.
+
+Another action isolates only the fibrin network.
+
+The network enlarges again, revealing individual strands, branches, junctions, and surrounding clot components.
+
+The researcher can then activate a time-dependent visualization of simulated clot remodeling, measure modeled structural changes, and return to the whole-lung view.
+
+Every transition must preserve anatomical location, visual continuity, and scientific context.
+
+## Design principle
+
+The product must support genuine spatial investigation.
+
+Do not build a static image placed inside a 3D room.
+
+All primary anatomical structures must be actual navigable 3D geometry with independent materials, visibility controls, selection, transforms, and metadata.
+
+---
+
+# 3. MULTISCALE ANATOMICAL ARCHITECTURE
+
+Create four connected visualization scales.
+
+## Scale A — Whole Thoracic Anatomy
+
+Represent:
+
+- Right and left lungs.
+- Pulmonary trunk.
+- Right and left pulmonary arteries.
+- Lobar pulmonary arteries.
+- Selected segmental pulmonary branches.
+- Pulmonary veins, visually differentiated from arteries.
+- Heart, where relevant for spatial context.
+- Rib cage and chest wall as optional reference layers.
+- Trachea and bronchi as distinct airway structures.
+- Anatomical orientation indicators.
+
+Display transparent lung surfaces enclosing a medically grounded pulmonary vascular tree.
+
+Distinguish airways from blood vessels. They must never be incorrectly connected.
+
+Allow the user to select pulmonary artery branches and navigate to their associated obstruction models.
+
+Provide a posterior, anterior, lateral, superior, inferior, and free-orbit view.
+
+## Scale B — Pulmonary Artery Geometry
+
+Transition into a selected artery.
+
+Render:
+
+- Vascular lumen.
+- Vessel wall.
+- Local curvature.
+- Bifurcation geometry.
+- A model of embolus position.
+- Residual flow channels.
+- Proximal and distal vascular regions.
+- Occluded and partially patent configurations.
+
+Support adjustable vessel transparency.
+
+The viewer must offer both external and internal inspection.
+
+An internal camera mode should allow the user to look along the vessel without implying that a real optical camera generated these visuals.
+
+## Scale C — Clot Architecture
+
+Represent a fibrin-rich thrombus as a three-dimensional composition of interconnected components.
+
+Components include:
+
+- Fibrin fiber network.
+- Red blood cells.
+- Platelets.
+- Optional leukocyte populations.
+- A conceptual distinction between more densely packed and less densely packed clot regions.
+- Local void spaces.
+- Fiber intersections.
+- Fiber bundles.
+- Model-defined structural connections.
+
+Each component is independently selectable.
+
+Preserve distinct visual appearances and scientifically labeled material identities.
+
+## Scale D — Fibrin Microstructure
+
+Create a true 3D network of thin fibers.
+
+The network should allow users to investigate:
+
+- Fiber paths.
+- Fiber diameter distributions.
+- Branching and intersections.
+- Fiber orientation.
+- Network connectivity.
+- Mesh pore geometry.
+- Spatial heterogeneity.
+- Local fiber concentration.
+- Synthetic deformation under applied loads.
+
+Distinguish physical cross-linking from apparent geometric intersection.
+
+Do not assume every point where two visual strands cross is a genuine molecular bond.
+
+Scale D is microscopic and generally cannot be derived from patient CT alone.
+
+---
+
+# 4. PROCEDURAL FIBRIN MESH GENERATOR
+
+Implement a configurable synthetic fibrin network generator.
+
+The output must be genuine geometry.
+
+Use a graph-based architecture:
+
+- Nodes represent fiber vertices, junctions, and endpoints.
+- Edges represent fiber segments.
+- Curves represent smooth fiber trajectories.
+- Geometry buffers store renderable meshes.
+- Attributes store fiber identity, diameter, material characteristics, and connectivity.
+
+Recommended implementation:
+
+- THREE.BufferGeometry for large mesh populations.
+- THREE.CatmullRomCurve3 for smooth fiber paths.
+- TubeGeometry for small illustrative networks.
+- Custom instanced or batched tube/segment rendering for large networks.
+- Typed arrays for geometry attributes.
+- Seeded random generators for reproducibility.
+- Spatial indexing to accelerate selections and proximity queries.
+
+Avoid generating thousands of separate high-polygon objects with individual draw calls.
+
+Provide physically meaningful distinctions between geometry parameters and independently validated material properties.
+
+## Interactive laboratory controls
+
+Allow users to change:
+
+- Fiber density.
+- Mean fiber diameter.
+- Fiber diameter variation.
+- Network branching density.
+- Orientation anisotropy.
+- Network connectivity.
+- Void fraction.
+- Red blood cell concentration.
+- Platelet population.
+- Simulated clot compaction.
+- Synthetic deformation intensity.
+
+All values should default to clearly labeled illustrative settings.
+
+Where an experimental dataset supplies measured values, replace illustrative defaults with appropriately sourced parameters.
+
+Never label guessed synthetic measurements as clinical observations.
+
+---
+
+# 5. RED BLOOD CELL GEOMETRY ENGINE
+
+Generate red blood cells as approximately biconcave disc-shaped meshes.
+
+They must not appear as ordinary spheres.
+
+Implement:
+
+- A reusable cell geometry.
+- Controlled scaling and orientation.
+- InstancedMesh rendering for large populations.
+- Cell-level selection when sufficiently zoomed.
+- Distinct free-flowing and entrapped states.
+- Deformation visualization as a research feature.
+- Spatial relationship with the fibrin network.
+
+At the clot scale, show cells retained within a dense fibrin structure.
+
+Outside the clot, cells may be shown moving through patent flow channels.
+
+Do not depict intact red blood cells as the molecular source of fibrin.
+
+Fibrin is generated from fibrinogen as part of the coagulation cascade.
+
+## Optional experimental model
+
+Investigate deformable cell representation using simplified particle or continuum mechanics.
+
+This is a separate physics model, not a visual animation pretending to be validated blood-cell mechanics.
+
+---
+
+# 6. PLATELET AND COAGULATION VIEW
+
+Create an educational mode that shows the stages of hemostasis and thrombosis.
+
+Visualize:
+
+1. Platelet activation and aggregation where biologically appropriate.
+2. Coagulation cascade represented through a simplified molecular pathway.
+3. Conversion of fibrinogen to fibrin through thrombin.
+4. Fibrin polymerization.
+5. Clot stabilization and cross-linking.
+6. Red blood cell entrapment.
+7. Compaction and remodeling.
+
+Use a timeline with clearly defined events.
+
+Do not imply that all pulmonary emboli form at the site where they lodge.
+
+Include an optional deep vein thrombosis origin module showing how a clot may develop in a deep vein, detach, travel through venous circulation and the right heart, and lodge in a pulmonary arterial branch.
+
+Provide different anatomical scenes for DVT formation and PE impaction.
+
+Do not confuse pulmonary embolism with cholesterol plaque accumulating in a coronary artery.
+
+---
+
+# 7. DISEASE PROGRESSION SIMULATION
+
+Implement a time-based state engine.
+
+Support at least these scenes:
+
+**State 01 — Patent artery**
+
+A pulmonary artery without the modeled embolus. Show directional blood-flow visualization.
+
+**State 02 — Embolus arrival**
+
+Animate an embolus traveling through a selected vessel, using a simplified research scenario.
+
+**State 03 — Embolus lodging**
+
+The clot reaches a vessel segment where its effective size and geometry prevent continued passage.
+
+**State 04 — Partial obstruction**
+
+Show remaining lumen and alternative flow paths.
+
+**State 05 — Severe obstruction**
+
+Show markedly reduced simulated flow through the affected branch.
+
+**State 06 — Downstream consequence**
+
+Display regional perfusion differences and, in an optional separate model, estimated effects on pulmonary vascular load.
+
+**State 07 — Clot remodeling**
+
+Illustrate selected biological and treatment-associated pathways.
+
+**State 08 — Follow-up comparison**
+
+Compare baseline and follow-up datasets when actually available.
+
+The simulator must not imply that every embolism follows a single predictable progression.
+
+Create controls for pausing, rewinding, stepping through, and accelerating synthetic simulation time.
+
+Distinguish simulated biological time from real elapsed time.
+
+---
+
+# 8. BLOOD FLOW AND HEMODYNAMICS
+
+Develop three levels of flow visualization.
+
+## Level 1 — Educational Flow Animation
+
+Use particle streamlines and directional arrows to illustrate basic flow.
+
+Label this as a conceptual animation.
+
+Particles are visualization markers, not individual measured blood cells.
+
+## Level 2 — Quantitative Research Data
+
+Support importing computational fluid dynamics results from an external solver.
+
+Data may contain:
+
+- Velocity vectors.
+- Pressure fields.
+- Wall shear stress.
+- Flow rates.
+- Time-dependent boundary conditions.
+- Vessel geometry.
+- Solver provenance.
+
+Render the data using color-mapped surfaces, streamlines, slices, and vector glyphs.
+
+Support VTK-compatible preprocessing and suitable GPU-friendly representations.
+
+## Level 3 — Advanced Coupled Simulation
+
+Reserve an optional architecture for coupling modeled clot geometry, vascular geometry, flow, and structural deformation.
+
+This requires a validated physical model and appropriate computational solver.
+
+Do not attempt to substitute decorative GPU particle animations for real CFD.
+
+Do not calculate diagnostic pulmonary artery pressures from appearance alone.
+
+## Visual flow tools
+
+Allow users to:
+
+- Select upstream and downstream regions.
+- View flow direction.
+- Visualize imported velocity magnitude.
+- Create virtual cross-sectional planes.
+- Inspect regions of recirculation where supported.
+- Compare models with different obstruction levels.
+- Display time-resolved streamlines.
+
+Every metric must identify whether it is measured, imported, or simulated.
+
+---
+
+# 9. FIBRINOLYSIS AND CLOT REMODELING
+
+Create a research visualization exploring clot breakdown.
+
+Represent the biological relationship between:
+
+- Plasminogen.
+- Plasmin.
+- Fibrin.
+- Plasminogen activators.
+- Fibrin degradation.
+
+The simulation should allow conceptual observation of fibers losing connectivity and the modeled network changing shape.
+
+Provide three distinct modes.
+
+### Mode A — Natural Fibrinolysis
+
+Show an educational model of endogenous clot remodeling.
+
+### Mode B — Thrombolytic Mechanism
+
+Illustrate how plasminogen activation can contribute to fibrin degradation.
+
+Clearly indicate that thrombolytic medications carry serious bleeding risks and are only appropriate in selected clinical circumstances.
+
+### Mode C — Mechanical Clot Removal
+
+Show a separate, conceptual visualization of an established catheter-based thrombectomy mechanism.
+
+Do not portray noninvasive external sensing as a proven means of dissolving or removing pulmonary clots.
+
+The research viewer may compare mechanical removal and pharmacological fibrinolysis conceptually, but it must not generate personalized treatment recommendations.
+
+## Fiber removal algorithm
+
+For animation:
+
+- Store mesh connectivity in the fibrin network graph.
+- Select subsets of edges according to a named illustrative degradation model.
+- Update node-edge connectivity.
+- Recalculate connected components.
+- Change the rendered mesh.
+- Illustrate disconnected fragments where relevant.
+
+Avoid implying that visual deletion of fibers precisely represents the rate or spatial pattern of actual fibrinolysis.
+
+Allow experimental degradation data to be imported later.
+
+---
+
+# 10. INTERACTIVE SPATIAL NAVIGATION
+
+Support three operating modes.
+
+## Desktop Mode
+
+Implement:
+
+- Orbit controls.
+- Pan and zoom.
+- Pointer-based selection.
+- Keyboard shortcuts.
+- Layer visibility.
+- Exploded component views.
+- Section clipping.
+- Measurement and annotation tools.
+
+## Virtual Reality Mode
+
+Target compatible WebXR immersive-VR browsers, including supported Meta Quest configurations.
+
+Provide:
+
+- Two-controller interaction.
+- Ray-based pointing.
+- Object grabbing.
+- Two-handed scaling.
+- World repositioning.
+- Selection highlights.
+- Floating tool panels.
+- Comfortable teleportation where navigation is needed.
+
+Support controller-first input, with hand tracking only when the runtime provides it.
+
+## Mixed Reality / Spatial Mode
+
+Provide a spatial-tabletop experience in supported immersive-AR environments.
+
+For Apple Vision Pro, provide a compatible browser-based 3D experience when immersive WebXR capabilities are supported. Otherwise use an appropriate native visionOS spatial presentation path.
+
+Do not assume WebXR immersive-AR, passthrough, or hand tracking are uniformly available across Apple and Meta devices.
+
+Capabilities must be detected at runtime.
+
+If an immersive feature is unavailable, provide a functional desktop or ordinary browser 3D fallback.
+
+## Scale navigation
+
+Allow transitions among:
+
+- Human anatomical scale.
+- Isolated vessel scale.
+- Clot scale.
+- Cellular scale.
+- Fibrin microstructure scale.
+
+Show scale bars and dimension units at each level.
+
+Never present microscopic objects at room scale without explicitly indicating magnification.
+
+---
+
+# 11. CLIPPING, SLICING, AND EXPLODED VIEWS
+
+Implement true geometric inspection.
+
+Required operations:
+
+- X-axis clipping.
+- Y-axis clipping.
+- Z-axis clipping.
+- Arbitrary clipping planes.
+- Vessel cross-sections.
+- Clot isolation.
+- Fibrin-only view.
+- RBC-only view.
+- Platelet-only view.
+- Transparent artery view.
+- Solid clot volume view.
+- Combined microscopy-style view.
+
+Provide smooth clipping-plane interaction.
+
+Where a watertight cross-section is required, create correct cross-sectional caps rather than leaving visually misleading open geometry.
+
+Support independent clipping of vessel walls, clot bodies, and microstructural components.
+
+Create an exploded-view mode where these components are spatially separated for teaching.
+
+---
+
+# 12. DISEASE MAPPING INTERFACE
+
+Create a premium research dashboard.
+
+## Main viewport
+
+Occupy most of the screen.
+
+Show the selected anatomy in a true real-time Three.js scene.
+
+## Left toolbar
+
+Include:
+
+- Orbit.
+- Pan.
+- Zoom.
+- Select.
+- Measure.
+- Slice.
+- Isolate.
+- Annotate.
+- Compare.
+- Reset.
+
+## Right inspector
+
+Sections:
+
+**Anatomy**
+- Selected artery.
+- Anatomical hierarchy.
+- Orientation.
+- Data source.
+
+**Clot**
+- Obstruction geometry.
+- Model-defined dimensions.
+- Synthetic or imported composition.
+- Visibility controls.
+
+**Fibrin**
+- Fiber density.
+- Connectivity.
+- Distribution metrics.
+- Network visualization settings.
+
+**Hemodynamics**
+- Flow dataset.
+- Velocity fields.
+- Pressure fields, if imported.
+- Time step.
+- Data provenance.
+
+**Research**
+- Simulation parameters.
+- Assumptions.
+- Confidence information.
+- Dataset references.
+
+## Bottom timeline
+
+Provide synchronized timeline controls for dynamic scenes.
+
+Users must be able to scrub the timeline while preserving interactive 3D navigation.
+
+## Spatial UI
+
+For headsets, transform the flat panels into movable spatial tools.
+
+Prefer comfortable, restrained layouts over dense floating dashboards.
+
+---
+
+# 13. 3D DATA IMPORT PIPELINE
+
+Create a clear distinction between anatomical data and synthetic microstructure.
+
+## Patient-level anatomy
+
+Investigate:
+
+- DICOM ingestion.
+- DICOM series selection.
+- CT pulmonary angiography visualization.
+- Segmentation into artery and clot regions.
+- Surface mesh generation.
+- Mesh smoothing and quality checks.
+- Coordinate transforms.
+- Spatial registration.
+- Optional registration to prior studies.
+
+Use a medical-imaging preprocessing pipeline rather than attempting to perform all volumetric segmentation inside a Three.js browser scene.
+
+Possible supporting libraries include ITK, VTK, vtk.js, and suitable DICOM utilities.
+
+Three.js is the primary interactive display engine, not a substitute for medical image reconstruction infrastructure.
+
+## Microstructure sources
+
+Support:
+
+- Procedurally generated fibrin networks.
+- Research microscopy segmentation.
+- Electron microscopy-derived geometry where available.
+- Confocal microscopy-derived geometry where available.
+- Laboratory reconstruction datasets.
+- Imported meshes or graph networks.
+
+When displaying microscopic geometry alongside patient-level anatomy, label the relationship as illustrative unless patient-specific biological correspondence has actually been demonstrated.
+
+## 3D exchange formats
+
+Support appropriate combinations of:
+
+- GLB / glTF.
+- VTK / VTP.
+- STL.
+- OBJ.
+- PLY.
+- JSON for scene and graph metadata.
+- NIfTI or medical imaging formats through a separate preprocessing route.
+
+Preserve coordinate units and anatomical orientation throughout the import pipeline.
+
+---
+
+# 14. SCIENTIFIC DATA PROVENANCE
+
+This is a mandatory system requirement.
+
+Every visual object must declare its source type.
+
+Use these categories:
+
+**Measured:** Directly supported by observational data.
+
+**Segmented:** Reconstructed from patient-level imaging, with associated uncertainty.
+
+**Simulated:** Generated by a computational physics or biological model.
+
+**Illustrative:** Synthetic educational geometry or animation.
+
+**Reference:** Imported anatomical atlas or example dataset.
+
+**Unknown:** Not determined by available data.
+
+In the inspection panel, show:
+
+- Source identifier.
+- Acquisition modality.
+- Scale.
+- Unit system.
+- Model version.
+- Dataset timestamp, when present.
+- Reconstruction method.
+- Confidence or validation status.
+- Key assumptions.
+
+A patient-derived embolus volume must not be displayed as a directly measured fibrin network volume.
+
+Do not imply that CT can identify the number of fibrin fibers, individual platelets, or red blood cells inside a clot.
+
+---
+
+# 15. MEASUREMENT ENGINE
+
+Provide 3D measurement tools with proper physical units.
+
+Examples include:
+
+- Vessel diameter.
+- Vessel length.
+- Obstruction length.
+- Obstruction volume.
+- Residual lumen area.
+- Model-defined obstruction fraction.
+- Fiber length.
+- Fiber diameter.
+- Fiber orientation distribution.
+- Network connectivity.
+- Porosity.
+- Cell count within an illustrative scene.
+
+Separate voxel-derived measurements, mesh-derived measurements, and synthetic parameters.
+
+For clinical-image-derived measurements, record the segmentation method and uncertainty where available.
+
+Never display default fabricated values as actual patient results.
+
+---
+
+# 16. ANNOTATION AND COLLABORATIVE RESEARCH
+
+Enable researchers to annotate 3D structures.
+
+Features:
+
+- Point markers.
+- Labels.
+- Measurement anchors.
+- Screenshots.
+- Saved viewpoints.
+- Session bookmarks.
+- Research notes.
+- Structured finding metadata.
+- Versioned scene state.
+- Exportable research summaries.
+
+Support shared sessions as a later module.
+
+Users should be able to review the same anatomical structure with synchronized camera positions and annotation layers.
+
+A saved study must preserve the original imported data and processing history.
+
+---
+
+# 17. THREE.JS TECHNICAL STACK
+
+## Front end
+
+- React.
+- TypeScript.
+- Vite or an equivalent modern build system.
+- Three.js.
+- @react-three/fiber.
+- @react-three/drei.
+- Zustand for scene and control state.
+- WebXR integration using maintained Three.js-compatible APIs.
+- Web Workers for computationally expensive preprocessing.
+- Responsive UI panels.
+
+## Rendering
+
+Use:
+
+- Physically based materials.
+- MeshPhysicalMaterial selectively for transparent structures.
+- Instanced meshes for red blood cells and platelets.
+- GPU-efficient geometry batching.
+- Adaptive level of detail.
+- BufferGeometry for fibrin networks.
+- Frustum culling.
+- Conservative transparent material use.
+- Optional postprocessing for subtle visual emphasis.
+
+Do not rely on large numbers of overlapping high-cost transparent meshes without profiling.
+
+Provide lower-cost render paths for standalone VR headsets.
+
+## Backend and computation
+
+Define services for:
+
+- Dataset registration.
+- Medical image preprocessing.
+- Segmentation processing.
+- Geometry conversion.
+- Scene asset storage.
+- Parameterized simulations.
+- Simulation result ingestion.
+- Annotation persistence.
+- Audit and provenance metadata.
+
+Advanced CFD or biological simulation should run in dedicated computational services.
+
+Do not use Three.js itself as a scientific solver.
+
+---
+
+# 18. APPLICATION MODULES
+
+Use the following modular project organization:
+
+```text
+src/
+  app/
+    routes/
+    layouts/
+  core/
+    scene/
+    camera/
+    selection/
+    coordinates/
+    animation/
+  anatomy/
+    lungs/
+    pulmonaryArteries/
+    heart/
+    vessels/
+  clot/
+    embolusGeometry/
+    fibrinNetwork/
+    redBloodCells/
+    platelets/
+    microstructure/
+  physics/
+    flowVisualization/
+    importedCFD/
+    fibrinolysisModels/
+    deformationModels/
+  xr/
+    runtimeDetection/
+    vrControllers/
+    handTracking/
+    spatialPanels/
+    locomotion/
+  tools/
+    clipping/
+    measurement/
+    annotation/
+    comparison/
+  imaging/
+    dicomImport/
+    segmentation/
+    registration/
+    meshConversion/
+  data/
+    schemas/
+    provenance/
+    validation/
+  ui/
+    inspector/
+    layers/
+    timeline/
+    toolbar/
+    researchWorkspace/
+  workers/
+  tests/
+```
+
+Keep all rendering and computation modules independently testable.
+
+---
+
+# 19. RECOMMENDED SCENE OBJECT SCHEMA
+
+Create a standardized object contract:
+
+```ts
+type EvidenceType =
+  | "measured"
+  | "segmented"
+  | "simulated"
+  | "illustrative"
+  | "reference"
+  | "unknown";
+
+interface BiomedicalSceneObject {
+  id: string;
+  name: string;
+  objectType: string;
+  anatomicalRegion?: string;
+
+  geometryAssetId: string;
+  materialId: string;
+
+  coordinateSystem: string;
+  spatialScale: number;
+  units: "m" | "mm" | "um" | "nm";
+
+  visible: boolean;
+  opacity: number;
+
+  evidenceType: EvidenceType;
+  datasetId?: string;
+  modelVersion?: string;
+
+  metadata: Record<string, unknown>;
+}
+```
+
+Use a consistent internal coordinate system.
+
+Convert imported medical units explicitly.
+
+Avoid hidden scaling assumptions.
+
+---
+
+# 20. FIBRIN NETWORK GRAPH SCHEMA
+
+Represent the fibrin structure independently of its visual mesh.
+
+```ts
+interface FibrinNode {
+  id: string;
+  position: [number, number, number];
+  nodeType: "endpoint" | "junction" | "interior";
+}
+
+interface FibrinEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  diameterUm?: number;
+  fiberClass?: string;
+  crossLinked?: boolean;
+}
+
+interface FibrinNetwork {
+  id: string;
+  seed?: number;
+  nodes: FibrinNode[];
+  edges: FibrinEdge[];
+  evidenceType: EvidenceType;
+  modelVersion: string;
+}
+```
+
+Keep graph structure separate from rendering buffers.
+
+This allows connectivity analysis, reproducible geometry generation, graph-based degradation experiments, and higher-quality scientific validation.
+
+---
+
+# 21. PERFORMANCE TARGETS
+
+Target practical interactive performance.
+
+Desktop rendering goal:
+
+- Approximately 60 FPS on capable modern hardware.
+
+Standalone headset rendering goal:
+
+- Match the device's required or recommended display refresh rate whenever practical.
+- Maintain comfortable frame pacing.
+- Reduce geometry and effects adaptively.
+- Avoid large frame-time spikes.
+- Profile actual device performance.
+
+Implement:
+
+- Level-of-detail switching.
+- Mesh instancing.
+- Geometry compression.
+- Lazy asset loading.
+- Progressive scene detail.
+- Memory-budget monitoring.
+- Worker-based preprocessing.
+- Automatic graphics-quality adaptation.
+
+Provide a performance overlay for researchers and developers.
+
+Do not promise a fixed frame rate across all devices.
+
+---
+
+# 22. FIRST BUILD: REQUIRED MVP
+
+Do not attempt to build every scientific subsystem simultaneously.
+
+Construct the following initial interactive application.
+
+## MVP Scene 1 — Whole Lung Navigation
+
+Render a simplified, anatomically grounded pair of lungs with a pulmonary artery tree.
+
+Highlight one modeled embolus.
+
+Allow the user to select it.
+
+## MVP Scene 2 — Artery Cutaway
+
+Transition to a three-dimensional cutaway of the obstructed vessel.
+
+Render:
+
+- Vessel wall.
+- Clot geometry.
+- Residual lumen.
+- Red blood cells.
+- Fibrin network.
+
+## MVP Scene 3 — Fibrin Isolation
+
+Hide the vessel and blood cells.
+
+Expose a standalone synthetic fibrin network.
+
+Allow rotation, magnification, and parameter changes.
+
+## MVP Scene 4 — Pathology Layers
+
+Let users toggle:
+
+- Vessel.
+- Embolus body.
+- Fibrin.
+- Red blood cells.
+- Platelets.
+- Background anatomy.
+
+## MVP Scene 5 — Educational Disease Timeline
+
+Provide a short, clearly illustrative animation progressing from patent vessel to embolic obstruction and a separate conceptual remodeling sequence.
+
+## MVP Scene 6 — Spatial Mode
+
+Support an immersive VR mode on a compatible headset.
+
+Include object selection, two-handed scaling, and a small spatial layer-control panel.
+
+Provide desktop fallback when XR is not available.
+
+---
+
+# 23. VALIDATION AND TESTING
+
+## Geometry validation
+
+Test:
+
+- Closed vessel surfaces where required.
+- Mesh intersections.
+- Surface normals.
+- Non-manifold geometry.
+- Units.
+- Scene coordinates.
+- Import fidelity.
+- Clipping accuracy.
+
+## Biological plausibility
+
+Review:
+
+- Pulmonary arterial anatomy.
+- RBC morphology.
+- Fibrin network morphology.
+- Platelet geometry.
+- Clot appearance.
+- Blood-flow illustration.
+- Fibrinolysis animations.
+
+Establish expert review before using the system for professional medical education.
+
+## Data validation
+
+Ensure:
+
+- Synthetic objects are labeled.
+- Imported sources are traceable.
+- Segmentation does not silently invent missing anatomy.
+- Quantitative measurements are reproducible.
+- Unknown information stays unknown.
+
+## XR validation
+
+Test:
+
+- Desktop Chrome/Edge.
+- Meta Quest Browser on supported hardware.
+- Compatible Apple Vision Pro browser capabilities.
+- Controller interaction.
+- Hand tracking where supported.
+- Viewport comfort.
+- Spatial scaling.
+- Session recovery.
+- Frame rate.
+
+Do not equate success in a desktop browser with validated headset support.
+
+---
+
+# 24. VISUAL DESIGN SYSTEM
+
+Use a premium black-and-gold medical research aesthetic.
+
+### Palette
+
+- Background: #080808
+- Panel surface: #131416
+- Border: #343538
+- Engineering gold: #B08D46
+- Fibrin highlight: #E6B65C
+- Red blood cell: deep crimson / maroon
+- Pulmonary artery: translucent neutral tissue tones
+- Contextual anatomy: smoky gray
+- Primary typography: near-white
+
+Use anatomical colors and visualization legends consistently.
+
+### Appearance
+
+- High-quality scientific visualization.
+- Translucent vessel walls.
+- Physically plausible material shading.
+- Fine gold fibrin fibers.
+- Accurate biconcave cell shapes.
+- Dark technical interface.
+- Subtle depth cues.
+- Sharp selection highlights.
+- Restrained annotation lines.
+
+Do not turn this into a game, a fantasy environment, or a decorative sci-fi hologram.
+
+---
+
+# 25. OPTIONAL FUTURE EXTENSIONS
+
+Preserve architectural expansion points for:
+
+**A. Pulmonary Embolism Research Atlas**
+
+A library of distinct embolism configurations and study cases.
+
+**B. Multimodal Imaging Fusion**
+
+Alignment of CT, ultrasound-derived data, and other appropriately supported modalities.
+
+**C. Hemodynamic Comparison**
+
+Compare CFD output for varied anatomical and clot geometries.
+
+**D. Clot Microstructure Laboratory**
+
+Explore experiment-derived fibrin network properties.
+
+**E. Instrument and Intervention Visualization**
+
+Visualize established catheter devices and procedural concepts using separately sourced medical models.
+
+**F. Dynamic Physiological Digital Twin**
+
+Research integration of patient-specific anatomy with longitudinal physiological measurements and separately validated computational models.
+
+Do not describe this future module as a clinically accurate digital twin until that capability is demonstrated.
+
+---
+
+# 26. AGENT EXECUTION INSTRUCTIONS
+
+You are a senior biomedical visualization engineer, Three.js specialist, WebXR developer, computational geometry engineer, and scientific software architect.
+
+Your task is to build an actual working browser-based 3D application.
+
+Execute in this order:
+
+1. Audit the existing project and identify its framework and assets.
+2. Preserve existing functional application features.
+3. Establish the TypeScript, Three.js, and React Three Fiber scene architecture.
+4. Build the central interactive 3D viewport.
+5. Implement an anatomically grounded pulmonary artery scene using suitable available or generated geometry.
+6. Create a synthetic embolus geometry.
+7. Generate a procedural fibrin graph and its 3D geometry.
+8. Generate instanced biconcave red blood cells.
+9. Add platelet geometry.
+10. Implement independently selectable scene layers.
+11. Implement orbit, pan, zoom, selection, and clipping tools.
+12. Create a transition between whole-lung, vessel, and microscopic scales.
+13. Build a synchronized educational timeline.
+14. Implement a research inspector with data provenance.
+15. Add WebXR immersive VR functionality using runtime feature detection.
+16. Optimize geometry and rendering for desktop and standalone headsets.
+17. Implement unit tests and visual regression checks.
+18. Verify that all requested controls actually operate.
+19. Document the scientific assumptions and unknowns.
+20. Produce a working MVP and a technical implementation report.
+
+Do not substitute rendered screenshots for working 3D functionality.
+
+Do not create static interface buttons with no corresponding interaction.
+
+Do not fabricate clinical measurements.
+
+Do not create decorative particle motion and call it computational fluid dynamics.
+
+Do not claim that patient CT data reveals individual fibrin fibers.
+
+## Definition of done
+
+The user can open the application, explore transparent lungs, select an embolus, navigate into its vessel, isolate a procedural fibrin mesh, manipulate the modeled structure, toggle clot components, control a timeline, inspect data provenance, and enter a compatible immersive 3D mode.
+
+Every core feature must be operational, and the application must visibly distinguish scientific data from experimental or illustrative representations.
+
+**The product succeeds when pulmonary embolism becomes a navigable, layered, scientifically interpretable 3D research environment—not simply an impressive medical animation.**
