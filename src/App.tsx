@@ -22,6 +22,7 @@ import { ClotPathControlBar } from './components/ClotPathControlBar.tsx';
 import { WebXRPanel } from './components/WebXRPanel.tsx';
 import { PatientClinicalContextCard } from './components/PatientClinicalContextCard.tsx';
 import { XdcNetworkModal } from './components/XdcNetworkModal.tsx';
+import { EnthalpyXdcSearchWindow } from './components/EnthalpyXdcSearchWindow.tsx';
 
 export default function App() {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -33,6 +34,7 @@ export default function App() {
   const [isDarkTheme, setIsDarkTheme] = useState(false);
   const [isProvenanceOpen, setIsProvenanceOpen] = useState(false);
   const [isXdcOpen, setIsXdcOpen] = useState(false);
+  const [isBlockchainSearchOpen, setIsBlockchainSearchOpen] = useState(false);
 
   // Disease Focus Areas, Clot Path & You.com Cited Explainer
   const [selectedStructureId, setSelectedStructureId] = useState<ExplorerAnatomyId>('pulmonaryArtery');
@@ -275,6 +277,8 @@ export default function App() {
         isClotPathActive={isClotPathActive}
         onTogglePatientContext={() => setIsPatientContextOpen((p) => !p)}
         isPatientContextOpen={isPatientContextOpen}
+        onOpenBlockchainSearch={() => setIsBlockchainSearchOpen(true)}
+        isBlockchainSearchOpen={isBlockchainSearchOpen}
         onOpenXdcNetwork={() => setIsXdcOpen(true)}
       />
 
@@ -293,7 +297,7 @@ export default function App() {
         />
       )}
 
-      {/* Disease POV Explainer (You.com Source-Agnostic Learning + D3 Clot Path Hemodynamics) */}
+      {/* Disease POV Explainer (Dedicated You.com Source-Agnostic Learning + D3 Clot Path Hemodynamics) */}
       <ExplainViewPanel
         selectedStructureId={selectedStructureId}
         onSelectStructure={handleSelectExplorerStructure}
@@ -301,6 +305,7 @@ export default function App() {
         onSeekClotPath={handleSeekClotPath}
         isOpen={isExplainPanelOpen}
         onClose={() => setIsExplainPanelOpen(false)}
+        onOpenBlockchainSearch={() => setIsBlockchainSearchOpen(true)}
         isDarkTheme={isDarkTheme}
       />
 
@@ -341,6 +346,17 @@ export default function App() {
         onClose={() => setIsXdcOpen(false)}
         selectedStructureId={selectedStructureId}
         clotPathProgress={clotPathProgress}
+        isDarkTheme={isDarkTheme}
+      />
+
+      {/* Separate ENTHALPY x XDC Blockchain Research Search Window */}
+      <EnthalpyXdcSearchWindow
+        isOpen={isBlockchainSearchOpen}
+        onClose={() => setIsBlockchainSearchOpen(false)}
+        selectedStructureId={selectedStructureId}
+        onSelectStructure={handleSelectExplorerStructure}
+        clotPathProgress={clotPathProgress}
+        onSeekClotPath={handleSeekClotPath}
         isDarkTheme={isDarkTheme}
       />
 

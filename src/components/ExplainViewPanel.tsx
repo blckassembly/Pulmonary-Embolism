@@ -17,12 +17,23 @@ import {
   Maximize2,
   X,
   Compass,
+  History,
+  Blocks,
 } from 'lucide-react';
 import {
   ExplorerAnatomyId,
   ExplainViewResponse,
   ExplainViewSource,
 } from '../types/biomedical.ts';
+import {
+  clearAllRecentSearches,
+  DEFAULT_RECENT_SEARCHES_KEY,
+  deleteRecentSearch,
+  getShortAnatomyCode,
+  loadRecentSearches,
+  RecentClinicalSearch,
+  recordRecentSearch,
+} from '../services/recentSearchesStorage.ts';
 import { EXPLORER_ANATOMY_STRUCTURES } from '../data/explorerAnatomyData.ts';
 import { ClotHemodynamicsChart } from './ClotHemodynamicsChart.tsx';
 
@@ -34,6 +45,7 @@ interface ExplainViewPanelProps {
   lyticFraction?: number;
   isOpen: boolean;
   onClose: () => void;
+  onOpenBlockchainSearch?: () => void;
   isDarkTheme?: boolean;
 }
 
@@ -57,12 +69,16 @@ export const ExplainViewPanel: React.FC<ExplainViewPanelProps> = ({
   lyticFraction = 0,
   isOpen,
   onClose,
+  onOpenBlockchainSearch,
   isDarkTheme = true,
 }) => {
   const currentStructure =
     EXPLORER_ANATOMY_STRUCTURES[selectedStructureId] ||
     EXPLORER_ANATOMY_STRUCTURES.pulmonaryArtery;
   const [typedQuestion, setTypedQuestion] = useState('');
+  const [recentSearches, setRecentSearches] = useState<RecentClinicalSearch[]>(() =>
+    loadRecentSearches(DEFAULT_RECENT_SEARCHES_KEY)
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [messages, setMessages] = useState<MessageEntry[]>([]);
@@ -73,10 +89,33 @@ export const ExplainViewPanel: React.FC<ExplainViewPanelProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
-  // Handle asking question (typed or suggested)
-  const handleAskQuestion = async (q: string) => {
+  // Dedicated You.com (u.com) search query handler
+  const handleAskQuestion = async (
+    q: string,
+    overrides?: {
+      anatomyId?: ExplorerAnatomyId;
+      anatomyLabel?: string;
+      clotProgress?: number;
+    }
+  ) => {
     const questionText = q.trim();
     if (!questionText || isLoading) return;
+
+    const targetAnatomyId = overrides?.anatomyId ?? selectedStructureId;
+    const targetAnatomyLabel = overrides?.anatomyLabel ?? currentStructure.label;
+    const targetClotProgress = overrides?.clotProgress ?? clotPathProgress;
+
+    const updatedHistory = recordRecentSearch(
+      {
+        query: questionText,
+        anatomyId: targetAnatomyId,
+        anatomyLabel: targetAnatomyLabel,
+        clotPathProgress: targetClotProgress,
+        mode: 'off-chain',
+      },
+      DEFAULT_RECENT_SEARCHES_KEY
+    );
+    setRecentSearches(updatedHistory);
 
     const userMsgId = `user_${Date.now()}`;
     const userMsg: MessageEntry = {
@@ -96,7 +135,7 @@ export const ExplainViewPanel: React.FC<ExplainViewPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: questionText,
-          anatomyLabel: currentStructure.label,
+          anatomyLabel: targetAnatomyLabel,
         }),
       });
 
@@ -132,6 +171,31 @@ export const ExplainViewPanel: React.FC<ExplainViewPanelProps> = ({
     }
   };
 
+  const handleRevisitRecentSearch = (entry: RecentClinicalSearch) => {
+    if (isLoading) return;
+    if (entry.anatomyId !== selectedStructureId) {
+      onSelectStructure(entry.anatomyId);
+    }
+    if (onSeekClotPath && Number.isFinite(entry.clotPathProgress)) {
+      onSeekClotPath(entry.clotPathProgress);
+    }
+    const anatomyLabel =
+      EXPLORER_ANATOMY_STRUCTURES[entry.anatomyId]?.label || entry.anatomyLabel;
+    void handleAskQuestion(entry.query, {
+      anatomyId: entry.anatomyId,
+      anatomyLabel,
+      clotProgress: entry.clotPathProgress,
+    });
+  };
+
+  const handleDeleteRecentSearch = (id: string) => {
+    setRecentSearches(deleteRecentSearch(id, DEFAULT_RECENT_SEARCHES_KEY));
+  };
+
+  const handleClearRecentSearches = () => {
+    setRecentSearches(clearAllRecentSearches(DEFAULT_RECENT_SEARCHES_KEY));
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -148,24 +212,24 @@ export const ExplainViewPanel: React.FC<ExplainViewPanelProps> = ({
           isDarkTheme ? 'border-[#22242b]' : 'border-slate-200'
         }`}
       >
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-sky-500/15 border border-sky-400/30 flex items-center justify-center text-sky-400">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-lg bg-sky-500/15 border border-sky-400/30 flex items-center justify-center text-sky-400 shrink-0">
             <Sparkles className="w-5 h-5" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-sm font-bold tracking-tight uppercase">Disease POV • Explain</h2>
               <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-400/30">
                 You.com API
               </span>
             </div>
-            <p className="text-xs text-slate-400 font-medium mt-0.5">
+            <p className="text-xs text-slate-400 font-medium mt-0.5 truncate">
               Source-Agnostic PE Pathophysiology & Hemodynamics
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => setIsMinimized((prev) => !prev)}
             title={isMinimized ? 'Expand Panel' : 'Minimize Panel'}
@@ -189,19 +253,33 @@ export const ExplainViewPanel: React.FC<ExplainViewPanelProps> = ({
 
       {!isMinimized && (
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-          {/* General Education Notice Banner */}
+          {/* General Education Notice Banner + Separate Blockchain Window Popout */}
           <div
-            className={`px-3.5 py-2 border-b flex items-center justify-between text-xs font-medium ${
+            className={`px-3.5 py-2 border-b flex items-center justify-between gap-2 text-xs font-medium ${
               isDarkTheme
                 ? 'bg-amber-500/10 border-amber-500/20 text-amber-300'
                 : 'bg-amber-50 border-amber-200 text-amber-900'
             }`}
           >
-            <span className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1.5 min-w-0 truncate">
               <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span>General Education Only • Illustrative 3D</span>
+              <span className="truncate">General Education Only • Illustrative 3D</span>
             </span>
-            <span className="text-xs font-mono opacity-85">Not for diagnosis</span>
+            {onOpenBlockchainSearch && (
+              <button
+                type="button"
+                onClick={onOpenBlockchainSearch}
+                title="Open ENTHALPY × XDC Blockchain Search in a separate window"
+                className={`inline-flex items-center gap-1 px-2 py-0.5 border text-[10px] font-mono uppercase tracking-wider shrink-0 transition-colors ${
+                  isDarkTheme
+                    ? 'border-white/40 bg-black/60 text-white hover:bg-white hover:text-black'
+                    : 'border-black/40 bg-white text-black hover:bg-black hover:text-white'
+                }`}
+              >
+                <Blocks className="w-3 h-3" />
+                <span>XDC Search Window ↗</span>
+              </button>
+            )}
           </div>
 
           {/* Anatomical Structure Selector Bar */}
@@ -335,7 +413,7 @@ export const ExplainViewPanel: React.FC<ExplainViewPanelProps> = ({
                           </div>
                         )}
 
-                        {/* Educational Sourced Answer */}
+                        {/* Educational Sourced Answer from You.com */}
                         <div
                           className={`p-3.5 rounded-xl border text-[15px] leading-relaxed shadow-sm ${
                             isDarkTheme
@@ -419,36 +497,119 @@ export const ExplainViewPanel: React.FC<ExplainViewPanelProps> = ({
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Interactive Question Input Box */}
+          {/* Interactive You.com Question Input Box + LocalStorage Recent Searches */}
           <form
             onSubmit={(e) => {
               e.preventDefault();
               handleAskQuestion(typedQuestion);
             }}
-            className={`p-3 border-t shrink-0 flex items-center gap-2 ${
+            className={`p-3 border-t shrink-0 space-y-2 ${
               isDarkTheme ? 'bg-[#111216] border-[#22242b]' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <input
-              type="text"
-              value={typedQuestion}
-              onChange={(e) => setTypedQuestion(e.target.value)}
-              placeholder={`Ask about ${currentStructure.label} or PE anatomy...`}
-              disabled={isLoading}
-              className={`flex-1 px-3.5 py-2.5 text-sm rounded-xl border outline-none transition-colors ${
-                isDarkTheme
-                  ? 'bg-[#18191f] border-[#282a32] text-white placeholder-slate-500 focus:border-sky-400'
-                  : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-sky-500'
-              }`}
-            />
-            <button
-              type="submit"
-              disabled={isLoading || !typedQuestion.trim()}
-              title="Send question"
-              className="p-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-black font-bold transition-all shadow-sm"
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            {recentSearches.length > 0 && (
+              <div
+                aria-label="Recent clinical searches"
+                className={`border p-2 space-y-1.5 rounded-lg ${
+                  isDarkTheme ? 'border-[#262832] bg-[#16181e]' : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider ${
+                      isDarkTheme ? 'text-slate-400' : 'text-slate-600'
+                    }`}
+                  >
+                    <History className="w-3 h-3 text-sky-400" />
+                    <span>Recent Searches ({recentSearches.length})</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleClearRecentSearches}
+                    disabled={isLoading}
+                    className={`text-[10px] font-mono uppercase underline underline-offset-2 transition-opacity hover:opacity-80 disabled:opacity-40 ${
+                      isDarkTheme ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-black'
+                    }`}
+                  >
+                    Clear All
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 max-h-[68px] overflow-y-auto pr-0.5">
+                  {recentSearches.map((entry) => {
+                    const clotPct = Math.round(entry.clotPathProgress * 100);
+                    return (
+                      <div
+                        key={entry.id}
+                        className={`inline-flex items-center rounded-md border text-[11px] max-w-full transition-colors ${
+                          isDarkTheme
+                            ? 'border-[#2c2f3b] bg-[#1b1d25] text-slate-200 hover:border-sky-400/60'
+                            : 'border-slate-200 bg-slate-50 text-slate-800 hover:border-sky-400'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleRevisitRecentSearch(entry)}
+                          disabled={isLoading}
+                          title={`Revisit "${entry.query}" (${entry.anatomyLabel}, Clot Path ${clotPct}%)`}
+                          className="flex items-center gap-1.5 px-2 py-1 text-left min-w-0 disabled:opacity-50"
+                        >
+                          <span className="truncate max-w-[180px] font-medium">
+                            {entry.query}
+                          </span>
+                          <span
+                            className={`text-[9px] font-mono uppercase px-1 rounded border shrink-0 ${
+                              isDarkTheme
+                                ? 'border-[#333645] text-sky-300'
+                                : 'border-slate-300 text-sky-700'
+                            }`}
+                          >
+                            {getShortAnatomyCode(entry.anatomyId)}·{clotPct}%
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRecentSearch(entry.id)}
+                          disabled={isLoading}
+                          title="Remove from recent searches"
+                          aria-label={`Remove recent search ${entry.query}`}
+                          className={`px-1.5 py-1 border-l transition-colors shrink-0 ${
+                            isDarkTheme
+                              ? 'border-[#2c2f3b] text-slate-400 hover:bg-slate-700 hover:text-white'
+                              : 'border-slate-200 text-slate-500 hover:bg-slate-200 hover:text-black'
+                          }`}
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={typedQuestion}
+                onChange={(e) => setTypedQuestion(e.target.value)}
+                placeholder={`Ask You.com about ${currentStructure.label} or PE anatomy...`}
+                disabled={isLoading}
+                className={`flex-1 px-3.5 py-2.5 text-sm rounded-xl border outline-none transition-colors ${
+                  isDarkTheme
+                    ? 'bg-[#18191f] border-[#282a32] text-white placeholder-slate-500 focus:border-sky-400'
+                    : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-sky-500'
+                }`}
+              />
+              <button
+                type="submit"
+                disabled={isLoading || !typedQuestion.trim()}
+                title="Send question"
+                className="p-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-black font-bold transition-all shadow-sm"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
           </form>
         </div>
       )}

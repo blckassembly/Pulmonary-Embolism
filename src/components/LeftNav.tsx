@@ -45,6 +45,8 @@ export interface LeftNavProps {
   isClotPathActive: boolean;
   onTogglePatientContext: () => void;
   isPatientContextOpen: boolean;
+  onOpenBlockchainSearch: () => void;
+  isBlockchainSearchOpen: boolean;
   onOpenXdcNetwork: () => void;
 }
 
@@ -67,6 +69,8 @@ export const LeftNav: React.FC<LeftNavProps> = ({
   isClotPathActive,
   onTogglePatientContext,
   isPatientContextOpen,
+  onOpenBlockchainSearch,
+  isBlockchainSearchOpen,
   onOpenXdcNetwork,
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -259,6 +263,43 @@ export const LeftNav: React.FC<LeftNavProps> = ({
               />
               {!isCollapsed && <span className="truncate">Patient Clinical Context</span>}
             </div>
+          </button>
+
+          <button
+            onClick={onOpenBlockchainSearch}
+            aria-pressed={isBlockchainSearchOpen}
+            title="Open ENTHALPY × XDC Blockchain Research Search in a separate popup window"
+            className={`w-full text-left text-sm font-semibold transition-all border flex items-center ${
+              isCollapsed ? 'p-2.5 justify-center' : 'px-3 py-2 justify-between gap-2'
+            } ${
+              isBlockchainSearchOpen
+                ? isDarkTheme
+                  ? 'bg-white text-black border-white font-bold'
+                  : 'bg-black text-white border-black font-bold'
+                : isDarkTheme
+                ? 'bg-[#101216] hover:bg-[#171920] text-neutral-100 border-white/25'
+                : 'bg-white hover:bg-neutral-100 text-neutral-900 border-black/30'
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Blocks className="w-4 h-4 shrink-0" />
+              {!isCollapsed && <span className="truncate font-mono text-xs uppercase">ENTHALPY × XDC</span>}
+            </div>
+            {!isCollapsed && (
+              <span
+                className={`text-[10px] font-mono px-1.5 py-0.5 border shrink-0 ${
+                  isBlockchainSearchOpen
+                    ? isDarkTheme
+                      ? 'border-black/40 text-black'
+                      : 'border-white/40 text-white'
+                    : isDarkTheme
+                    ? 'border-white/30 text-neutral-300'
+                    : 'border-black/30 text-neutral-700'
+                }`}
+              >
+                Search ↗
+              </span>
+            )}
           </button>
         </div>
 
