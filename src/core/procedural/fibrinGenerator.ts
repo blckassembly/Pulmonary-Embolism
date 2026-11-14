@@ -14,6 +14,9 @@ export interface FibrinGenOptions {
   diameterVariation?: number;
   seed?: number;
   bounds?: { x: number; y: number; z: number };
+  branchProbability?: number;
+  crossLinkProbability?: number;
+  orientationBias?: number;
 }
 
 /**
@@ -35,13 +38,16 @@ class SimpleRNG {
  */
 export function generateFibrinGraph(options: FibrinGenOptions = {}): FibrinNetwork {
   const {
-    nodeCount = 110,
+    nodeCount = 120,
     connectionDistance = 3.6,
     maxDegree = 4,
     meanDiameterUm = 0.28,
     diameterVariation = 0.08,
     seed = 1042,
     bounds = { x: 7.5, y: 5.5, z: 6.0 },
+    branchProbability = 0.75,
+    crossLinkProbability = 0.8,
+    orientationBias = 0.45,
   } = options;
 
   const rng = new SimpleRNG(seed);
@@ -57,9 +63,11 @@ export function generateFibrinGraph(options: FibrinGenOptions = {}): FibrinNetwo
     const phi = Math.acos(2.0 * v - 1.0);
     const r = Math.pow(rng.next(), 0.65); // radial concentration
 
+    // Incorporate orientation bias towards longitudinal axis (z)
+    const stretchZ = 1.0 + orientationBias * 0.8;
     const px = r * bounds.x * Math.sin(phi) * Math.cos(theta);
     const py = r * bounds.y * Math.sin(phi) * Math.sin(theta);
-    const pz = (rng.next() - 0.5) * 2.0 * bounds.z;
+    const pz = (rng.next() - 0.5) * 2.0 * bounds.z * stretchZ;
 
     nodes.push({
       id: `fn_${i}`,
@@ -94,17 +102,22 @@ export function generateFibrinGraph(options: FibrinGenOptions = {}): FibrinNetwo
     // Sort by proximity
     distances.sort((a, b) => a.dist - b.dist);
 
+    const effectiveMaxDegree = Math.max(2, Math.round(branchProbability * 5.0));
+
     for (const neighbor of distances) {
       const j = neighbor.index;
       if (i >= j) continue; // avoid duplicate bidirectional edges
 
+      // Branch probability filter
+      if (rng.next() > branchProbability + 0.15) continue;
+
       const degA = degreeMap.get(i) || 0;
       const degB = degreeMap.get(j) || 0;
 
-      if (degA < maxDegree && degB < maxDegree) {
+      if (degA < effectiveMaxDegree && degB < effectiveMaxDegree) {
         // Diameter variation
-        const diam = Math.max(0.12, meanDiameterUm + (rng.next() - 0.5) * 2 * diameterVariation);
-        const crossLinked = rng.next() > 0.35;
+        const diam = Math.max(0.08, meanDiameterUm + (rng.next() - 0.5) * 2 * diameterVariation);
+        const crossLinked = rng.next() < crossLinkProbability;
 
         edges.push({
           id: `fe_${edgeCounter++}`,

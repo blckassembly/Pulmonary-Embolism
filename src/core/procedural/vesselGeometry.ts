@@ -169,7 +169,14 @@ export class HemodynamicParticles {
     this.update(0, 0.7); // initial update
   }
 
-  public update(delta: number, obstructionFactor: number): void {
+  public update(
+    delta: number,
+    obstructionFactor: number,
+    speedScale = 1.0,
+    isDrugInfused = false
+  ): void {
+    const effectiveSpeed = Math.max(0.05, speedScale);
+
     for (let i = 0; i < this.count; i++) {
       const p = this.particleData[i];
 
@@ -189,7 +196,8 @@ export class HemodynamicParticles {
         speedMultiplier = 1.0 + obstructionFactor * 0.5;
       }
 
-      p.t += p.speed * speedMultiplier * (delta * 0.8 + 0.016);
+      // Apply slow motion speedScale
+      p.t += p.speed * speedMultiplier * (delta * 0.8 + 0.016) * effectiveSpeed;
       if (p.t > 1.0) p.t -= 1.0;
 
       // Calculate 3D position
@@ -227,21 +235,35 @@ export class HemodynamicParticles {
 
       // Orientation & velocity color mapping
       this.dummy.position.copy(pos);
-      // Particle color: blue/cyan (slow/normal) -> green -> gold/orange (high velocity jet) -> purple (recirculation)
       let velocityMetric = speedMultiplier;
-      if (p.branch === 'inferior' && p.t >= 0.7 && obstructionFactor > 0.5) {
-        // Recirculation wake color (deep purple / cyan)
-        this.color.setHex(0x38bdf8);
-      } else if (velocityMetric > 1.7) {
-        this.color.setHex(0xe6b65c); // high shear gold jet
-      } else if (velocityMetric > 1.2) {
-        this.color.setHex(0x10b981); // green accelerated
+
+      if (isDrugInfused) {
+        // Drug comes in the bloodstream as vibrant gold!
+        // Upstream front and stenosis penetration glows gold (#ffd700 / #e6b65c)
+        if (p.t < 0.75) {
+          // Luminous engineering gold drug front
+          this.color.setHex(0xffd700);
+        } else {
+          // Distal dispersion: warm amber-gold
+          this.color.setHex(0xf59e0b);
+        }
       } else {
-        this.color.setHex(0x3b82f6); // laminar blue
+        // Standard physiological hemodynamics color mapping
+        if (p.branch === 'inferior' && p.t >= 0.7 && obstructionFactor > 0.5) {
+          // Recirculation wake color (deep purple / cyan)
+          this.color.setHex(0x38bdf8);
+        } else if (velocityMetric > 1.7) {
+          this.color.setHex(0xe6b65c); // high shear gold jet
+        } else if (velocityMetric > 1.2) {
+          this.color.setHex(0x10b981); // green accelerated
+        } else {
+          this.color.setHex(0x3b82f6); // laminar blue
+        }
       }
 
       this.mesh.setColorAt(i, this.color);
-      this.dummy.scale.set(p.baseScale * (velocityMetric > 1.5 ? 1.8 : 1.0), p.baseScale, p.baseScale);
+      const elongation = isDrugInfused ? 2.2 : (velocityMetric > 1.5 ? 1.8 : 1.0);
+      this.dummy.scale.set(p.baseScale * elongation, p.baseScale, p.baseScale);
       this.dummy.updateMatrix();
       this.mesh.setMatrixAt(i, this.dummy.matrix);
     }

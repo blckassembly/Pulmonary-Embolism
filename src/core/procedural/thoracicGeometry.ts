@@ -6,12 +6,37 @@
 import * as THREE from 'three';
 
 /**
- * Creates the whole thoracic anatomical model:
+ * Waypoints along the anatomical clot trajectory:
+ * 1. Deep Veins (Leg / Pelvis / Inferior Vena Cava)
+ * 2. Right Atrium & Tricuspid Valve
+ * 3. Right Ventricle & Pulmonary Valve
+ * 4. Main Pulmonary Trunk & Bifurcation
+ * 5. Lobar Branch Impaction Site (Pulmonary Embolism)
+ */
+export const CLOT_PATH_SPLINE_POINTS: [number, number, number][] = [
+  [-1.0, -18.5, -0.2], // Left common iliac tributary
+  [-0.2, -15.0, 0.2],  // Confluence of IVC
+  [0.4, -10.5, 0.6],   // Infrarenal IVC
+  [1.0, -7.0, 1.0],    // Suprahepatic IVC entering right atrium
+  [1.8, -4.5, 1.4],    // Right atrium cavity
+  [1.4, -2.8, 2.2],    // Tricuspid valve into right ventricle
+  [0.8, -1.0, 2.8],    // Right ventricular outflow tract (RVOT)
+  [0.4, 1.5, 2.2],     // Pulmonary valve into main trunk
+  [-0.2, 5.0, 1.2],    // Pulmonary bifurcation (saddle area)
+  [-4.5, 4.2, 0.5],    // Right pulmonary artery
+  [-8.5, 2.0, 0.2],    // Right lower lobe trunk
+  [-9.8, -2.5, 0.0],   // Lobar arrest / occlusive thrombus site
+];
+
+/**
+ * Creates the complete thoracic anatomical model for Embolism Explorer:
  * - Transparent right & left lungs (anatomically shaped lobes)
- * - Tracheobronchial tree (trachea, carina, mainstem bronchi)
- * - Pulmonary vascular arterial tree (trunk, right & left pulmonary arteries, segmental branches)
- * - Cardiac silhouette
+ * - Cardiac silhouette (Right atrium, right ventricle, left ventricle)
+ * - Deep veins & Inferior Vena Cava (IVC)
+ * - Tracheobronchial tree
+ * - Pulmonary vascular arterial tree (trunk, RPA, LPA, lower lobe artery)
  * - Engineering gold highlighted embolus occlusion site
+ * - Clot path guide spline and travel markers
  */
 export function createThoracicOrganGroup(): THREE.Group {
   const root = new THREE.Group();
@@ -29,6 +54,9 @@ export function createThoracicOrganGroup(): THREE.Group {
     depthWrite: false,
     side: THREE.DoubleSide,
   });
+
+  const lungsGroup = new THREE.Group();
+  lungsGroup.name = 'LungsGroup';
 
   // Right lung (3 lobes: superior, middle, inferior)
   const rightLungGroup = new THREE.Group();
@@ -50,7 +78,7 @@ export function createThoracicOrganGroup(): THREE.Group {
   const rInfMesh = new THREE.Mesh(rInfGeo, lungMat);
 
   rightLungGroup.add(rSupMesh, rMidMesh, rInfMesh);
-  root.add(rightLungGroup);
+  lungsGroup.add(rightLungGroup);
 
   // Left lung (2 lobes: superior, inferior with cardiac notch)
   const leftLungGroup = new THREE.Group();
@@ -67,9 +95,13 @@ export function createThoracicOrganGroup(): THREE.Group {
   const lInfMesh = new THREE.Mesh(lInfGeo, lungMat);
 
   leftLungGroup.add(lSupMesh, lInfMesh);
-  root.add(leftLungGroup);
+  lungsGroup.add(leftLungGroup);
+  root.add(lungsGroup);
 
-  // 2. Cardiac Silhouette (Anatomical context at mediastinum)
+  // 2. Cardiac Silhouette & Cavities (Right Atrium & Ventricle)
+  const heartGroup = new THREE.Group();
+  heartGroup.name = 'HeartAnatomyGroup';
+
   const heartGeo = new THREE.SphereGeometry(6.5, 24, 20);
   heartGeo.scale(0.9, 1.15, 0.95);
   heartGeo.translate(1.8, -4.0, 1.5);
@@ -82,16 +114,84 @@ export function createThoracicOrganGroup(): THREE.Group {
   });
   const heartMesh = new THREE.Mesh(heartGeo, heartMat);
   heartMesh.name = 'HeartAnatomy';
-  root.add(heartMesh);
+  heartGroup.add(heartMesh);
 
-  // 3. Tracheobronchial Airway Tree
+  // Highlighted Right Ventricle / Atrium contour (strain indicator)
+  const rvGeo = new THREE.SphereGeometry(4.2, 20, 18);
+  rvGeo.scale(0.9, 1.1, 0.9);
+  rvGeo.translate(1.5, -3.2, 2.0);
+  const rvMat = new THREE.MeshStandardMaterial({
+    color: 0x661820,
+    roughness: 0.4,
+    transparent: true,
+    opacity: 0.35,
+  });
+  const rvMesh = new THREE.Mesh(rvGeo, rvMat);
+  rvMesh.name = 'RightVentricleMesh';
+  heartGroup.add(rvMesh);
+  root.add(heartGroup);
+
+  // 3. Deep Veins & Inferior Vena Cava (IVC)
+  const deepVeinsGroup = new THREE.Group();
+  deepVeinsGroup.name = 'DeepVeinsGroup';
+
+  const veinMat = new THREE.MeshStandardMaterial({
+    color: 0x1e3a8a, // deep royal venous blue
+    roughness: 0.35,
+    metalness: 0.25,
+  });
+
+  // Inferior Vena Cava trunk ascending to the right atrium
+  const ivcCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-0.2, -15.0, 0.2),
+    new THREE.Vector3(0.4, -10.5, 0.6),
+    new THREE.Vector3(1.0, -7.0, 1.0),
+    new THREE.Vector3(1.8, -5.0, 1.4), // entry into RA
+  ]);
+  const ivcMesh = new THREE.Mesh(new THREE.TubeGeometry(ivcCurve, 20, 1.35, 12, false), veinMat);
+  ivcMesh.name = 'InferiorVenaCava';
+  deepVeinsGroup.add(ivcMesh);
+
+  // Right common iliac vein
+  const rIliacCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-3.2, -19.5, -0.4),
+    new THREE.Vector3(-1.8, -17.0, -0.1),
+    new THREE.Vector3(-0.2, -15.0, 0.2),
+  ]);
+  const rIliacMesh = new THREE.Mesh(new THREE.TubeGeometry(rIliacCurve, 12, 1.0, 10, false), veinMat);
+  deepVeinsGroup.add(rIliacMesh);
+
+  // Left common iliac vein
+  const lIliacCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(2.8, -19.5, -0.4),
+    new THREE.Vector3(1.4, -17.0, -0.1),
+    new THREE.Vector3(-0.2, -15.0, 0.2),
+  ]);
+  const lIliacMesh = new THREE.Mesh(new THREE.TubeGeometry(lIliacCurve, 12, 1.0, 10, false), veinMat);
+  deepVeinsGroup.add(lIliacMesh);
+
+  // Thrombus origin nodule in deep leg/pelvic vein
+  const dvtOriginGeo = new THREE.SphereGeometry(1.2, 16, 14);
+  dvtOriginGeo.scale(0.9, 1.5, 0.9);
+  dvtOriginGeo.translate(-3.2, -19.5, -0.4);
+  const dvtOriginMat = new THREE.MeshStandardMaterial({
+    color: 0xb08d46, // engineering gold thrombus
+    emissive: 0x6d4b1a,
+    emissiveIntensity: 0.5,
+    roughness: 0.3,
+  });
+  const dvtOriginMesh = new THREE.Mesh(dvtOriginGeo, dvtOriginMat);
+  dvtOriginMesh.name = 'DVTOriginSite';
+  deepVeinsGroup.add(dvtOriginMesh);
+  root.add(deepVeinsGroup);
+
+  // 4. Tracheobronchial Airway Tree
   const airwayMat = new THREE.MeshStandardMaterial({
     color: 0xd4d8e2, // cartilaginous airway white/platinum
     roughness: 0.42,
     metalness: 0.1,
   });
 
-  // Trachea
   const tracheaCurve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0, 19, 0),
     new THREE.Vector3(0.1, 12, 0.2),
@@ -100,7 +200,6 @@ export function createThoracicOrganGroup(): THREE.Group {
   const tracheaMesh = new THREE.Mesh(new THREE.TubeGeometry(tracheaCurve, 16, 1.25, 12, false), airwayMat);
   root.add(tracheaMesh);
 
-  // Right mainstem bronchus (steeper, wider)
   const rBronchusCurve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0.2, 6.5, 0.4),
     new THREE.Vector3(-3.5, 4.0, -0.2),
@@ -109,7 +208,6 @@ export function createThoracicOrganGroup(): THREE.Group {
   const rBronchusMesh = new THREE.Mesh(new THREE.TubeGeometry(rBronchusCurve, 14, 0.95, 10, false), airwayMat);
   root.add(rBronchusMesh);
 
-  // Left mainstem bronchus (longer, more horizontal)
   const lBronchusCurve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0.2, 6.5, 0.4),
     new THREE.Vector3(4.2, 4.5, -0.3),
@@ -118,30 +216,35 @@ export function createThoracicOrganGroup(): THREE.Group {
   const lBronchusMesh = new THREE.Mesh(new THREE.TubeGeometry(lBronchusCurve, 14, 0.85, 10, false), airwayMat);
   root.add(lBronchusMesh);
 
-  // 4. Pulmonary Arterial Tree (Vessels in distinct deoxygenated arterial crimson/blue)
+  // 5. Pulmonary Arterial Tree (Vessels in deoxygenated arterial blue)
+  const paGroup = new THREE.Group();
+  paGroup.name = 'PulmonaryArteryGroup';
+
   const paMat = new THREE.MeshStandardMaterial({
-    color: 0x3b82f6, // deoxygenated pulmonary blood blue/indigo
+    color: 0x2563eb,
     roughness: 0.35,
     metalness: 0.2,
   });
 
   // Pulmonary trunk
   const trunkCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(0.5, -1.5, 3.0),
-    new THREE.Vector3(0.2, 2.5, 2.0),
+    new THREE.Vector3(0.4, 1.5, 2.2),
+    new THREE.Vector3(0.2, 3.2, 1.8),
     new THREE.Vector3(-0.2, 5.0, 1.2), // bifurcation
   ]);
   const trunkMesh = new THREE.Mesh(new THREE.TubeGeometry(trunkCurve, 16, 1.5, 14, false), paMat);
-  root.add(trunkMesh);
+  trunkMesh.name = 'PulmonaryTrunkMesh';
+  paGroup.add(trunkMesh);
 
-  // Right Pulmonary Artery (courses posterior to ascending aorta)
+  // Right Pulmonary Artery
   const rpaCurve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(-0.2, 5.0, 1.2),
     new THREE.Vector3(-4.5, 4.2, 0.5),
     new THREE.Vector3(-8.5, 2.0, 0.2),
   ]);
   const rpaMesh = new THREE.Mesh(new THREE.TubeGeometry(rpaCurve, 16, 1.2, 12, false), paMat);
-  root.add(rpaMesh);
+  rpaMesh.name = 'RightPulmonaryArteryMesh';
+  paGroup.add(rpaMesh);
 
   // Right lower lobe lobar artery (site of embolus)
   const rllCurve = new THREE.CatmullRomCurve3([
@@ -150,7 +253,8 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(-10.8, -7.5, -0.4),
   ]);
   const rllMesh = new THREE.Mesh(new THREE.TubeGeometry(rllCurve, 16, 0.95, 10, false), paMat);
-  root.add(rllMesh);
+  rllMesh.name = 'RightLowerLobeArteryMesh';
+  paGroup.add(rllMesh);
 
   // Left Pulmonary Artery
   const lpaCurve = new THREE.CatmullRomCurve3([
@@ -160,9 +264,10 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(10.5, -2.0, 0.1),
   ]);
   const lpaMesh = new THREE.Mesh(new THREE.TubeGeometry(lpaCurve, 20, 1.15, 12, false), paMat);
-  root.add(lpaMesh);
+  lpaMesh.name = 'LeftPulmonaryArteryMesh';
+  paGroup.add(lpaMesh);
 
-  // 5. Embolus Highlight Site (Engineering Gold highlight on Right Lower Lobe Artery)
+  // 6. Embolus Highlight Site (Engineering Gold highlight on Right Lower Lobe Artery)
   const embolusHighlightGeo = new THREE.SphereGeometry(1.6, 20, 16);
   embolusHighlightGeo.scale(1.1, 1.8, 1.0);
   embolusHighlightGeo.translate(-9.8, -2.5, 0.0);
@@ -177,7 +282,7 @@ export function createThoracicOrganGroup(): THREE.Group {
 
   const embolusHighlightMesh = new THREE.Mesh(embolusHighlightGeo, embolusHighlightMat);
   embolusHighlightMesh.name = 'ThoracicEmbolusSite';
-  root.add(embolusHighlightMesh);
+  paGroup.add(embolusHighlightMesh);
 
   // Pulsing gold beacon ring around the occlusion site
   const beaconRingGeo = new THREE.TorusGeometry(2.4, 0.12, 12, 32);
@@ -191,7 +296,37 @@ export function createThoracicOrganGroup(): THREE.Group {
   });
   const beaconMesh = new THREE.Mesh(beaconRingGeo, beaconMat);
   beaconMesh.name = 'EmbolusBeaconRing';
-  root.add(beaconMesh);
+  paGroup.add(beaconMesh);
+  root.add(paGroup);
+
+  // 7. Clot Trajectory Guide Spline Tube (Illuminated transit path from DVT to PE)
+  const splineVectors = CLOT_PATH_SPLINE_POINTS.map((p) => new THREE.Vector3(...p));
+  const clotPathCurve = new THREE.CatmullRomCurve3(splineVectors);
+  const pathTubeGeo = new THREE.TubeGeometry(clotPathCurve, 64, 0.18, 8, false);
+  const pathTubeMat = new THREE.MeshBasicMaterial({
+    color: 0xf59e0b,
+    transparent: true,
+    opacity: 0.45,
+    wireframe: false,
+  });
+  const pathTubeMesh = new THREE.Mesh(pathTubeGeo, pathTubeMat);
+  pathTubeMesh.name = 'ClotTrajectoryGuideTube';
+  root.add(pathTubeMesh);
+
+  // 8. Interactive Travelling Embolus Particle Mesh (Scrubbable / Animatable along trajectory)
+  const travelingClotGeo = new THREE.SphereGeometry(0.85, 18, 16);
+  travelingClotGeo.scale(1.0, 1.4, 0.9);
+  const travelingClotMat = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    emissive: 0xd97706,
+    emissiveIntensity: 0.8,
+    roughness: 0.2,
+    metalness: 0.9,
+  });
+  const travelingClotMesh = new THREE.Mesh(travelingClotGeo, travelingClotMat);
+  travelingClotMesh.name = 'TravelingClotEmbolus';
+  travelingClotMesh.position.copy(splineVectors[0]);
+  root.add(travelingClotMesh);
 
   return root;
 }

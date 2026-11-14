@@ -43,6 +43,7 @@ interface CollapsibleDockProps {
   onClipDistanceChange: (val: number) => void;
   explodedOffset: number;
   onExplodedOffsetChange: (val: number) => void;
+  isDarkTheme?: boolean;
 }
 
 export const CollapsibleDock: React.FC<CollapsibleDockProps> = ({
@@ -65,27 +66,21 @@ export const CollapsibleDock: React.FC<CollapsibleDockProps> = ({
   onClipDistanceChange,
   explodedOffset,
   onExplodedOffsetChange,
+  isDarkTheme = false,
 }) => {
-  const [isCollapsed, setIsCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<'timeline' | 'fibrin' | 'hemodynamics' | 'tools'>('timeline');
 
   const currentStage = stages[currentStageIndex];
 
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[94vw] max-w-[920px] select-none transition-transform duration-300">
-      {/* Collapse / Expand toggle button */}
-      <div className="flex justify-center -mb-2">
-        <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="flex items-center gap-1.5 px-3 py-1 text-[11px] font-medium text-[#c5c9d3] hover:text-white bg-[#131416] border border-[#2a2b2e] rounded-t-md transition-colors"
-        >
-          {isCollapsed ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          <span>{isCollapsed ? 'Show Controls' : 'Hide Controls'}</span>
-        </button>
-      </div>
-
-      {!isCollapsed && (
-        <div className="bg-[#131416] border border-[#2a2b2e] rounded-xl shadow-2xl p-3.5 space-y-3">
+    <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-20 w-[94vw] max-w-[880px] select-none transition-all duration-300">
+      <div
+        className={`border rounded-2xl shadow-xl p-3.5 space-y-3 backdrop-blur-md transition-colors ${
+          isDarkTheme
+            ? 'bg-[#131416]/95 border-[#2a2b2e] text-white shadow-2xl'
+            : 'bg-white/95 border-slate-200/90 text-slate-900 shadow-slate-200/50'
+        }`}
+      >
           {/* Sub-Tabs Header */}
           <div className="flex items-center justify-between border-b border-[#24252a] pb-2.5">
             <div className="flex items-center gap-1">
@@ -350,6 +345,7 @@ export const CollapsibleDock: React.FC<CollapsibleDockProps> = ({
                     ['vesselWall', 'Vessel Wall'],
                     ['thrombusBody', 'Thrombus Body'],
                     ['thoracicLungs', 'Thoracic Lungs'],
+                    ['annotations', '3D Bio-Annotations'],
                   ] as const
                 ).map(([key, label]) => (
                   <button
@@ -368,7 +364,6 @@ export const CollapsibleDock: React.FC<CollapsibleDockProps> = ({
             </div>
           )}
         </div>
-      )}
     </div>
   );
 };

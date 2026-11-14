@@ -86,12 +86,12 @@ export const ProvenanceModal: React.FC<ProvenanceModalProps> = ({ isOpen, onClos
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#24252a]">
           <div className="flex items-center gap-3">
-            <ShieldCheck className="w-5 h-5 text-[#b08d46]" />
+            <ShieldCheck className="w-6 h-6 text-[#b08d46]" />
             <div>
-              <h2 className="text-base font-semibold text-white">
+              <h2 className="text-lg font-semibold text-white">
                 Scientific Data Provenance & Ground Truth Reference
               </h2>
-              <p className="text-xs text-[#8a8f9d]">
+              <p className="text-sm text-[#9aa0a6]">
                 Mandatory disclosure of data sources, segmentation uncertainties, and computational models
               </p>
             </div>
@@ -108,7 +108,7 @@ export const ProvenanceModal: React.FC<ProvenanceModalProps> = ({ isOpen, onClos
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Reference Image Comparison Card */}
           <div className="bg-[#18191d] border border-[#2a2b2e] rounded-xl p-4">
-            <h3 className="text-xs font-semibold text-white uppercase tracking-wider mb-2 flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-white uppercase tracking-wider mb-3 flex items-center gap-2">
               <BookOpen className="w-4 h-4 text-[#e6b65c]" />
               Microscopic Ground Truth Reference (Electron Microscopy Calibration)
             </h3>
@@ -119,12 +119,12 @@ export const ProvenanceModal: React.FC<ProvenanceModalProps> = ({ isOpen, onClos
                   alt="Pulmonary Embolus Fibrin Mesh Conceptual Microscopic Structure"
                   className="w-full h-auto max-h-[260px] object-contain mx-auto"
                 />
-                <div className="absolute bottom-2 left-2 right-2 px-2.5 py-1 bg-black/75 backdrop-blur-sm rounded text-[11px] text-[#e6b65c] font-mono">
+                <div className="absolute bottom-2 left-2 right-2 px-2.5 py-1 bg-black/75 backdrop-blur-sm rounded text-xs text-[#e6b65c] font-mono">
                   SEM Reference: Conceptual Microscopic Structure
                 </div>
               </div>
 
-              <div className="space-y-2 text-xs text-[#9aa0a6] leading-relaxed">
+              <div className="space-y-2.5 text-sm text-[#c5c9d3] leading-relaxed">
                 <p>
                   <strong className="text-white">Physical vs Clinical Reality:</strong> In clinical practice, Computed Tomography Pulmonary Angiography (CTPA) operates at a spatial resolution limit of approximately <span className="font-mono text-white">0.5 to 0.625 mm</span>.
                 </p>
@@ -140,34 +140,34 @@ export const ProvenanceModal: React.FC<ProvenanceModalProps> = ({ isOpen, onClos
 
           {/* Component Provenance Taxonomy Table */}
           <div className="space-y-3">
-            <h3 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
               <Database className="w-4 h-4 text-[#b08d46]" />
               Component Classification Matrix
             </h3>
 
             <div className="border border-[#2a2b2e] rounded-xl overflow-hidden">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#18191d] text-[#8a8f9d] border-b border-[#2a2b2e]">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-[#18191d] text-[#9aa0a6] border-b border-[#2a2b2e]">
                   <tr>
-                    <th className="py-2.5 px-3 font-medium">Component</th>
-                    <th className="py-2.5 px-3 font-medium">Scale</th>
-                    <th className="py-2.5 px-3 font-medium">Evidence Type</th>
-                    <th className="py-2.5 px-3 font-medium">Source / Method</th>
-                    <th className="py-2.5 px-3 font-medium">Known Limitations</th>
+                    <th className="py-3 px-3.5 font-medium">Component</th>
+                    <th className="py-3 px-3.5 font-medium">Scale</th>
+                    <th className="py-3 px-3.5 font-medium">Evidence Type</th>
+                    <th className="py-3 px-3.5 font-medium">Source / Method</th>
+                    <th className="py-3 px-3.5 font-medium">Known Limitations</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#24252a] text-[#c5c9d3]">
                   {objectTaxonomy.map((row, idx) => (
                     <tr key={idx} className="hover:bg-[#1a1b20] transition-colors">
-                      <td className="py-3 px-3 font-semibold text-white">{row.name}</td>
-                      <td className="py-3 px-3 font-mono text-[#8a8f9d]">{row.scale}</td>
-                      <td className="py-3 px-3">
-                        <span className={`px-2 py-0.5 rounded text-[11px] font-mono uppercase border ${getBadgeStyle(row.evidenceType)}`}>
+                      <td className="py-3 px-3.5 font-semibold text-white">{row.name}</td>
+                      <td className="py-3 px-3.5 font-mono text-[#9aa0a6] text-xs">{row.scale}</td>
+                      <td className="py-3 px-3.5">
+                        <span className={`px-2 py-0.5 rounded text-xs font-mono uppercase border ${getBadgeStyle(row.evidenceType)}`}>
                           {row.evidenceType}
                         </span>
                       </td>
-                      <td className="py-3 px-3 text-[#9aa0a6]">{row.source}</td>
-                      <td className="py-3 px-3 text-[#8a8f9d] text-[11px]">{row.uncertainty}</td>
+                      <td className="py-3 px-3.5 text-[#c5c9d3] text-xs">{row.source}</td>
+                      <td className="py-3 px-3.5 text-[#9aa0a6] text-xs">{row.uncertainty}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -177,13 +177,13 @@ export const ProvenanceModal: React.FC<ProvenanceModalProps> = ({ isOpen, onClos
         </div>
 
         {/* Modal Footer */}
-        <div className="flex items-center justify-between px-6 py-3.5 border-t border-[#24252a] bg-[#18191d]">
-          <span className="text-xs text-[#8a8f9d]">
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[#24252a] bg-[#18191d]">
+          <span className="text-sm text-[#9aa0a6]">
             Research Engine Specification: PE-3D-001 · Not for unverified clinical intervention
           </span>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 text-xs font-medium text-black bg-[#e6b65c] hover:bg-[#f3ca76] rounded-lg transition-colors"
+            className="px-4 py-2 text-sm font-semibold text-black bg-[#e6b65c] hover:bg-[#f3ca76] rounded-lg transition-colors"
           >
             Acknowledge & Close
           </button>

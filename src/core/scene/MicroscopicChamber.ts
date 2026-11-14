@@ -163,15 +163,28 @@ export class MicroscopicChamber {
     nodeCount?: number;
     meanDiameterUm?: number;
     lyticFraction?: number;
+    branchProbability?: number;
+    crossLinkProbability?: number;
+    orientationBias?: number;
+    fiberDensity?: number;
+    primaryColorHex?: string;
   }): void {
-    if (options.nodeCount !== undefined || options.meanDiameterUm !== undefined) {
-      this.network = generateFibrinGraph({
-        nodeCount: options.nodeCount ?? this.network.nodes.length,
-        meanDiameterUm: options.meanDiameterUm ?? 0.28,
-        connectionDistance: 3.8,
-        bounds: { x: 7.2, y: 5.2, z: 5.8 },
-      });
+    if (options.primaryColorHex) {
+      this.fibrinMaterial.color.set(options.primaryColorHex);
     }
+
+    const calculatedNodeCount = options.nodeCount ?? (options.fiberDensity !== undefined ? Math.round(70 + options.fiberDensity * 90) : this.network.nodes.length);
+
+    this.network = generateFibrinGraph({
+      nodeCount: calculatedNodeCount,
+      meanDiameterUm: options.meanDiameterUm ?? 0.28,
+      connectionDistance: 3.8,
+      bounds: { x: 7.2, y: 5.2, z: 5.8 },
+      branchProbability: options.branchProbability ?? 0.75,
+      crossLinkProbability: options.crossLinkProbability ?? 0.8,
+      orientationBias: options.orientationBias ?? 0.45,
+    });
+
     this.rebuildFibrin(options.lyticFraction ?? 0);
   }
 
