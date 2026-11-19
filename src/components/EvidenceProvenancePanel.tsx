@@ -21,6 +21,7 @@ interface EvidenceProvenancePanelProps {
   isDarkTheme?: boolean;
   layoutMode?: 'drawer' | 'pane';
   verificationProvider?: IEvidenceVerificationProvider;
+  onVerificationResult?: (result: EvidenceVerificationCheckResult | null) => void;
 }
 
 export const EvidenceProvenancePanel: React.FC<EvidenceProvenancePanelProps> = ({
@@ -29,6 +30,7 @@ export const EvidenceProvenancePanel: React.FC<EvidenceProvenancePanelProps> = (
   isDarkTheme = true,
   layoutMode = 'pane',
   verificationProvider = defaultEvidenceVerificationProvider,
+  onVerificationResult,
 }) => {
   const [copiedDigest, setCopiedDigest] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -39,7 +41,8 @@ export const EvidenceProvenancePanel: React.FC<EvidenceProvenancePanelProps> = (
     setCopiedDigest(false);
     setVerificationResult(null);
     setIsVerifying(false);
-  }, [item?.id]);
+    onVerificationResult?.(null);
+  }, [item?.id, onVerificationResult]);
 
   // Strictly black-and-white wireframe tokens paired with app's dark/light base
   const frameBg = isDarkTheme
@@ -88,6 +91,7 @@ export const EvidenceProvenancePanel: React.FC<EvidenceProvenancePanelProps> = (
     try {
       const res = await verificationProvider.verifyEvidence(item);
       setVerificationResult(res);
+      onVerificationResult?.(res);
     } finally {
       setIsVerifying(false);
     }

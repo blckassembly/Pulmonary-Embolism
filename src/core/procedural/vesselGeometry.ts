@@ -59,9 +59,12 @@ export function createVesselCutawayGroup(): THREE.Group {
   // Three.js TubeGeometry generates full tubes. We can cut away a 110-degree window
   // using custom tube generation or clipping planes!
   // Let's create the branches with TubeGeometry
-  const mainTube = new THREE.Mesh(new THREE.TubeGeometry(curveMain, 24, 2.8, 20, false), wallMat);
-  const supTube = new THREE.Mesh(new THREE.TubeGeometry(curveSup, 24, 2.1, 20, false), wallMat);
-  const infTube = new THREE.Mesh(new THREE.TubeGeometry(curveInf, 24, 2.3, 20, false), wallMat);
+  const mainTube = new THREE.Mesh(new THREE.TubeGeometry(curveMain, 24, 2.8, 20, false), wallMat.clone());
+  mainTube.name = 'CutawayMainTrunkMesh';
+  const supTube = new THREE.Mesh(new THREE.TubeGeometry(curveSup, 24, 2.1, 20, false), wallMat.clone());
+  supTube.name = 'CutawaySuperiorBranchMesh';
+  const infTube = new THREE.Mesh(new THREE.TubeGeometry(curveInf, 24, 2.3, 20, false), wallMat.clone());
+  infTube.name = 'CutawayInferiorBranchMesh';
 
   mainTube.renderOrder = 2;
   supTube.renderOrder = 2;
@@ -71,10 +74,11 @@ export function createVesselCutawayGroup(): THREE.Group {
   group.add(supTube);
   group.add(infTube);
 
-  // Vessel bifurcation bifurcation cuff
+  // Vessel bifurcation cuff
   const cuffGeo = new THREE.SphereGeometry(3.0, 24, 16);
   cuffGeo.scale(1.1, 1.0, 0.9);
-  const cuffMesh = new THREE.Mesh(cuffGeo, wallMat);
+  const cuffMesh = new THREE.Mesh(cuffGeo, wallMat.clone());
+  cuffMesh.name = 'CutawayBifurcationCuffMesh';
   cuffMesh.renderOrder = 2;
   group.add(cuffMesh);
 

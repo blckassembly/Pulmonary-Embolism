@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { XRHandModelFactory } from 'three/examples/jsm/webxr/XRHandModelFactory.js';
+import { XRControllerModelFactory } from 'three/examples/jsm/webxr/XRControllerModelFactory.js';
 import { ScaleLevel } from '../../types/biomedical.ts';
 import {
   AnatomicalLabelPayload,
@@ -16,6 +17,7 @@ import {
   XRTrackingState,
 } from '../../types/webxr.ts';
 import { AnatomicalInteractionAdapter, VRHudAction } from '../interaction/AnatomicalInteractionAdapter.ts';
+import { MetaQuestIntegration } from './MetaQuestIntegration.ts';
 
 interface DesktopSceneSnapshot {
   position: THREE.Vector3;
@@ -35,29 +37,82 @@ interface VRButtonEntry {
 export interface WebXRHost {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
+  rigParent: THREE.Group;
   sceneContainer: THREE.Group;
   adapter: AnatomicalInteractionAdapter;
   getCurrentScale: () => ScaleLevel;
+  getZoomMultiplier?: () => number;
+  onZoomDelta?: (factor: number) => void;
+  computeTeleportArc?: (origin: THREE.Vector3, direction: THREE.Vector3) => {
+    points: THREE.Vector3[];
+    hitPoint: THREE.Vector3 | null;
+    hitNormal: THREE.Vector3 | null;
+    hitLabel: string | null;
+    hitKind: 'anatomy' | 'floor' | 'none';
+    valid: boolean;
+  };
+  onTeleportExecute?: (
+    worldPoint: THREE.Vector3,
+    hitKind: 'anatomy' | 'floor',
+    hitLabel: string | null
+  ) => void;
+  onSnapTurn?: (angleRadians: number) => void;
+  onResetLocomotion?: () => void;
+  getLocomotionState?: () => { position: [number, number, number]; targetLabel: string | null };
   onDiagnosticsChange: (diagnostics: XRDiagnosticsState) => void;
   onSessionStateChange?: (isPresenting: boolean) => void;
 }
 
-const SESSION_INIT_OPTIONS: XRSessionInit = {
+const VR_SESSION_INIT_OPTIONS: XRSessionInit = {
   optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
 };
+
+const AR_SESSION_INIT_OPTIONS: XRSessionInit = {
+  optionalFeatures: [
+    'local-floor',
+    'bounded-floor',
+    'hand-tracking',
+    'plane-detection',
+    'mesh-detection',
+    'hit-test',
+    'anchors',
+  ],
+};
+
+const MAX_TELEPORT_ARC_POINTS = 32;
 
 export class WebXRControllerRig {
   private host: WebXRHost;
   private handModelFactory = new XRHandModelFactory();
+  private controllerModelFactory = new XRControllerModelFactory();
+  public metaQuest: MetaQuestIntegration;
 
-  // XR rig container attached to scene
+  // XR rig container attached to host.rigParent (vrPlayerRig)
   public xrRigGroup = new THREE.Group();
   private controllers: THREE.XRTargetRaySpace[] = [];
   private controllerGrips: THREE.XRGripSpace[] = [];
+  private proceduralGrips: THREE.Group[] = [];
+  private controllerModels: THREE.Object3D[] = [];
   private hands: THREE.XRHandSpace[] = [];
   private controllerRays: THREE.Line[] = [];
   private controllerReticles: THREE.Mesh[] = [];
   private handPinchIndicators: THREE.Mesh[] = [];
+
+  // Teleportation arc & reticle visuals in world space
+  private teleportVisualGroup = new THREE.Group();
+  private teleportArcLine!: THREE.Line;
+  private teleportArcGeo!: THREE.BufferGeometry;
+  private teleportArcMat!: THREE.LineBasicMaterial;
+  private teleportTargetRing!: THREE.Mesh;
+  private teleportBeaconMesh!: THREE.Mesh;
+  private activeTeleportSourceSlot: number | null = null;
+  private pendingTeleportHit: {
+    point: THREE.Vector3;
+    kind: 'anatomy' | 'floor';
+    label: string | null;
+  } | null = null;
+  private stickTeleportArmed: [boolean, boolean] = [false, false];
+  private snapTurnArmed: [boolean, boolean] = [false, false];
 
   // Seated pedestal & in-world spatial label HUD
   private seatedPedestalMesh!: THREE.Mesh;
@@ -72,8 +127,15 @@ export class WebXRControllerRig {
 
   // Session & state tracking
   private currentSession: XRSession | null = null;
+  private activeSessionMode: 'immersive-vr' | 'immersive-ar' | null = null;
   private activeReferenceSpaceType: 'local-floor' | 'local' | 'none' = 'none';
   private desktopSnapshot: DesktopSceneSnapshot | null = null;
+  private arBackdropSnapshot: {
+    background: THREE.Scene['background'];
+    fog: THREE.Scene['fog'];
+    clearColor: THREE.Color;
+    clearAlpha: number;
+  } | null = null;
   private activeSelectSources = new Set<XRInputSource>();
   private activeSqueezeSources = new Set<XRInputSource>();
   private mountedVRButtonEl: HTMLElement | null = null;
@@ -87,9 +149,12 @@ export class WebXRControllerRig {
   private tempOrigin = new THREE.Vector3();
   private tempDirection = new THREE.Vector3();
   private tempQuat = new THREE.Quaternion();
+  private tempUpVec = new THREE.Vector3(0, 1, 0);
   private tempHandPos = new THREE.Vector3();
   private tempHandQuat = new THREE.Quaternion();
   private tempThumbPos = new THREE.Vector3();
+  private tempCamWorldPos = new THREE.Vector3();
+  private hoveredActionThisFrame: VRHudAction | null = null;
 
   // Bound session handlers so they can be cleanly removed
   private boundOnSessionStart = () => {
@@ -112,10 +177,14 @@ export class WebXRControllerRig {
   };
   private boundOnSessionSqueezeStart = (e: XRInputSourceEvent) => {
     this.activeSqueezeSources.add(e.inputSource);
-    this.logEvent('xr-input', `squeezestart (${e.inputSource.handedness})`, 'info');
+    this.logEvent('teleport', `Teleport arc armed (${e.inputSource.handedness})`, 'info');
   };
   private boundOnSessionSqueezeEnd = (e: XRInputSourceEvent) => {
+    const wasSqueezing = this.activeSqueezeSources.has(e.inputSource);
     this.activeSqueezeSources.delete(e.inputSource);
+    if (wasSqueezing) {
+      this.commitPendingTeleport(e.inputSource.handedness);
+    }
   };
 
   constructor(host: WebXRHost) {
@@ -123,7 +192,16 @@ export class WebXRControllerRig {
 
     this.xrRigGroup.name = 'WebXRRigGroup';
     this.xrRigGroup.visible = false;
-    this.host.scene.add(this.xrRigGroup);
+    this.host.rigParent.add(this.xrRigGroup);
+
+    this.metaQuest = new MetaQuestIntegration(
+      this.host.renderer,
+      this.host.scene,
+      (msg) => {
+        this.logEvent('meta-ratk', msg, 'info');
+        this.emitDiagnostics(false);
+      }
+    );
 
     // Initialize label canvas & texture
     this.labelCanvas = document.createElement('canvas');
@@ -147,12 +225,16 @@ export class WebXRControllerRig {
       protocol,
       hasNavigatorXR: hasXR,
       isImmersiveVRSupported: hasXR ? null : false,
+      isMixedRealitySupported: false,
+      runtimeMode: hasXR ? 'native' : 'none',
+      isEmulatorActive: false,
       supportCheckError: !isSecure
         ? 'Insecure context: WebXR requires HTTPS (or localhost for desktop/emulated testing).'
         : !hasXR
-        ? 'navigator.xr API is unavailable in this browser.'
+        ? 'navigator.xr unavailable natively — activate Meta Quest 3 Simulator (IWER) to test VR locomotion & controls on desktop.'
         : null,
       sessionActive: false,
+      sessionMode: null,
       isPresenting: false,
       referenceSpaceType: 'none',
       viewerTrackingState: 'unavailable',
@@ -160,19 +242,25 @@ export class WebXRControllerRig {
       visibilityState: null,
       features: {
         immersiveVr: hasXR ? 'unknown' : 'unsupported',
-        localFloor: 'unknown',
-        boundedFloor: 'unknown',
-        handTracking: 'unknown',
+        localFloor: hasXR ? 'unknown' : 'unsupported',
+        boundedFloor: hasXR ? 'unknown' : 'unsupported',
+        handTracking: hasXR ? 'unknown' : 'unsupported',
       },
       inputSources: [],
       activeInteractionSource: null,
       isManipulatingSpecimen: false,
       selectedTargetLabel: null,
+      ratkPlanesCount: 0,
+      ratkMeshesCount: 0,
+      vrZoomMultiplier: 1.0,
+      locomotionPosition: [0, 0, 0],
+      locomotionTargetLabel: null,
       lastError: null,
       events: [],
     };
 
     this.setupControllersAndHands();
+    this.setupTeleportVisuals();
     this.setupSeatedPedestalAndHud();
     this.bindRendererEvents();
     void this.checkXRSupport();
@@ -195,9 +283,14 @@ export class WebXRControllerRig {
    * Probes navigator.xr.isSessionSupported('immersive-vr') cleanly.
    */
   public async checkXRSupport(): Promise<boolean> {
+    const emulatorOn = this.metaQuest.isEmulatorActive();
+    this.diagnostics.isEmulatorActive = emulatorOn;
+
     if (typeof navigator === 'undefined' || !navigator.xr) {
       this.diagnostics.hasNavigatorXR = false;
       this.diagnostics.isImmersiveVRSupported = false;
+      this.diagnostics.isMixedRealitySupported = false;
+      this.diagnostics.runtimeMode = 'none';
       this.diagnostics.features.immersiveVr = 'unsupported';
       this.diagnostics.features.handTracking = 'unsupported';
       this.diagnostics.features.localFloor = 'unsupported';
@@ -205,7 +298,7 @@ export class WebXRControllerRig {
       this.logEvent(
         'webxr',
         this.diagnostics.isSecureContext
-          ? 'navigator.xr unavailable — desktop 3D fallback active'
+          ? 'navigator.xr unavailable — enable Meta Quest 3 Simulator (IWER) or use desktop controls'
           : 'Non-HTTPS context — WebXR blocked, desktop fallback active',
         'warn'
       );
@@ -215,21 +308,32 @@ export class WebXRControllerRig {
 
     try {
       const supported = await navigator.xr.isSessionSupported('immersive-vr');
+      let arSupported = false;
+      try {
+        arSupported = await navigator.xr.isSessionSupported('immersive-ar');
+      } catch {
+        arSupported = false;
+      }
+
       this.diagnostics.hasNavigatorXR = true;
       this.diagnostics.isImmersiveVRSupported = supported;
+      this.diagnostics.isMixedRealitySupported = arSupported;
+      this.diagnostics.runtimeMode = emulatorOn ? 'iwer-quest3' : supported ? 'native' : 'none';
       this.diagnostics.features.immersiveVr = supported ? 'available' : 'unsupported';
       this.diagnostics.features.localFloor = supported ? 'available' : 'unsupported';
       this.diagnostics.features.boundedFloor = supported ? 'available' : 'unsupported';
       this.diagnostics.features.handTracking = supported ? 'available' : 'unsupported';
       this.diagnostics.supportCheckError = supported
         ? null
-        : 'Browser reports WebXR present, but no immersive-vr runtime/headset is currently available.';
+        : 'Browser reports WebXR present, but no immersive-vr headset is attached. Try activating the Meta Quest 3 Simulator (IWER).';
 
       this.logEvent(
         'webxr',
-        supported
-          ? 'immersive-vr feature check passed (VR runtime available)'
-          : 'immersive-vr unsupported on this device/browser — desktop mode ready',
+        emulatorOn
+          ? 'Meta Quest 3 IWER simulator active (VR + AR + Hand Tracking ready)'
+          : supported
+          ? `Native WebXR ready (VR: yes, MR/Passthrough: ${arSupported ? 'yes' : 'no'})`
+          : 'immersive-vr unsupported on this browser — Meta Quest 3 simulator available',
         supported ? 'info' : 'warn'
       );
       this.emitDiagnostics(true);
@@ -237,6 +341,7 @@ export class WebXRControllerRig {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.diagnostics.isImmersiveVRSupported = false;
+      this.diagnostics.isMixedRealitySupported = false;
       this.diagnostics.features.immersiveVr = 'unavailable';
       this.diagnostics.supportCheckError = msg;
       this.logEvent('webxr', `immersive-vr check failed: ${msg}`, 'error');
@@ -245,12 +350,33 @@ export class WebXRControllerRig {
     }
   }
 
+  public async toggleMetaQuestEmulator(): Promise<boolean> {
+    if (this.metaQuest.isEmulatorActive()) {
+      if (this.currentSession) {
+        await this.exitVR();
+      }
+      this.metaQuest.disableQuestEmulator();
+      this.logEvent('meta-iwer', 'Disabled Meta Quest 3 desktop simulator', 'info');
+      await this.checkXRSupport();
+      return false;
+    }
+
+    const ok = this.metaQuest.enableQuestEmulator();
+    if (ok) {
+      this.logEvent('meta-iwer', 'Activated Meta Quest 3 IWER runtime + DevUI overlay', 'info');
+    } else {
+      this.logEvent('meta-iwer', 'Failed to start Meta Quest 3 IWER runtime', 'error');
+    }
+    await this.checkXRSupport();
+    return ok;
+  }
+
   /**
    * Mounts Three.js's official VRButton inside a target React container slot.
    */
   public mountVRButton(container: HTMLElement): () => void {
     container.innerHTML = '';
-    const vrBtn = VRButton.createButton(this.host.renderer, SESSION_INIT_OPTIONS);
+    const vrBtn = VRButton.createButton(this.host.renderer, VR_SESSION_INIT_OPTIONS);
     // Override Three.js default absolute bottom-center positioning so it sits cleanly inside the panel
     vrBtn.style.position = 'relative';
     vrBtn.style.bottom = 'auto';
@@ -262,13 +388,14 @@ export class WebXRControllerRig {
     vrBtn.style.borderRadius = '10px';
     vrBtn.style.fontWeight = '700';
     vrBtn.style.fontSize = '12px';
-    vrBtn.style.letterSpacing = '0.04em';
-    vrBtn.style.background = '#e6b65c';
-    vrBtn.style.color = '#09090b';
-    vrBtn.style.border = '1px solid #d4a13f';
+    vrBtn.style.letterSpacing = '0.08em';
+    vrBtn.style.background = '#F5D547';
+    vrBtn.style.color = '#141514';
+    vrBtn.style.border = '1px solid #141514';
     vrBtn.style.display = 'inline-flex';
     vrBtn.style.alignItems = 'center';
     vrBtn.style.justifyContent = 'center';
+    vrBtn.style.cursor = 'pointer';
 
     container.appendChild(vrBtn);
     this.mountedVRButtonEl = vrBtn;
@@ -282,12 +409,12 @@ export class WebXRControllerRig {
   }
 
   /**
-   * Programmatic Enter VR entry point (kept synchronized with VRButton via renderer.xr session events).
+   * Programmatic Enter VR / Mixed Reality entry point (synchronized with renderer.xr session events).
    */
-  public async enterVR(): Promise<boolean> {
+  public async enterVR(mode: 'immersive-vr' | 'immersive-ar' = 'immersive-vr'): Promise<boolean> {
     if (this.currentSession) return true;
 
-    if (!this.diagnostics.isSecureContext) {
+    if (!this.diagnostics.isSecureContext && !this.metaQuest.isEmulatorActive()) {
       const msg = 'WebXR requires a secure HTTPS context (or localhost).';
       this.diagnostics.lastError = msg;
       this.logEvent('webxr', msg, 'error');
@@ -305,12 +432,14 @@ export class WebXRControllerRig {
 
     try {
       this.diagnostics.lastError = null;
+      this.activeSessionMode = mode;
       this.host.renderer.xr.setReferenceSpaceType('local-floor');
-      const session = await navigator.xr.requestSession('immersive-vr', SESSION_INIT_OPTIONS);
+      const initOpts = mode === 'immersive-ar' ? AR_SESSION_INIT_OPTIONS : VR_SESSION_INIT_OPTIONS;
+      const session = await navigator.xr.requestSession(mode, initOpts);
 
       try {
         await this.host.renderer.xr.setSession(session);
-      } catch (refErr) {
+      } catch {
         // Fallback if 'local-floor' reference space is unsupported by runtime
         this.logEvent('webxr', 'local-floor unavailable, falling back to local reference space', 'warn');
         this.host.renderer.xr.setReferenceSpaceType('local');
@@ -318,22 +447,47 @@ export class WebXRControllerRig {
       }
       return true;
     } catch (err) {
+      this.activeSessionMode = null;
       const msg = err instanceof Error ? err.message : String(err);
       this.diagnostics.lastError = msg;
-      this.logEvent('webxr', `Enter VR failed: ${msg}`, 'error');
+      this.logEvent('webxr', `Enter ${mode} failed: ${msg}`, 'error');
       this.emitDiagnostics(true);
       return false;
     }
   }
 
   public async exitVR(): Promise<void> {
-    if (this.currentSession) {
+    if (typeof document !== 'undefined' && document.pointerLockElement) {
       try {
-        await this.currentSession.end();
+        document.exitPointerLock?.();
+      } catch {
+        // Ignore pointer lock exit errors
+      }
+    }
+
+    const activeSession = this.currentSession || this.host.renderer.xr.getSession();
+    if (activeSession) {
+      try {
+        await activeSession.end();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         this.logEvent('webxr', `Session end notice: ${msg}`, 'warn');
+        // Safety fallback if runtime failed to fire sessionend
+        if (this.currentSession || this.diagnostics.isPresenting) {
+          this.handleRendererSessionEnd();
+        }
       }
+    } else if (this.diagnostics.isPresenting) {
+      this.handleRendererSessionEnd();
+    }
+  }
+
+  public async exitVRAndDisableEmulator(): Promise<void> {
+    await this.exitVR();
+    if (this.metaQuest.isEmulatorActive()) {
+      this.metaQuest.disableQuestEmulator();
+      this.logEvent('meta-iwer', 'Exited VR and disabled Meta Quest 3 simulator', 'info');
+      await this.checkXRSupport();
     }
   }
 
@@ -343,7 +497,8 @@ export class WebXRControllerRig {
    */
   public recenterSeatedSpecimen(): void {
     const isLocalFloor = this.activeReferenceSpaceType === 'local-floor';
-    const scale = this.getSeatedScaleFactor(this.host.getCurrentScale());
+    const zoomMult = this.host.getZoomMultiplier?.() ?? 1.0;
+    const scale = this.getSeatedScaleFactor(this.host.getCurrentScale()) * zoomMult;
 
     const specimenPos = isLocalFloor
       ? new THREE.Vector3(0, 1.05, -0.92)
@@ -353,6 +508,7 @@ export class WebXRControllerRig {
       ? new THREE.Vector3(0.56, 1.12, -0.78)
       : new THREE.Vector3(0.56, -0.02, -0.78);
 
+    this.host.onResetLocomotion?.();
     this.host.sceneContainer.position.copy(specimenPos);
     this.host.sceneContainer.quaternion.identity();
     this.host.sceneContainer.scale.setScalar(scale);
@@ -370,11 +526,19 @@ export class WebXRControllerRig {
     this.emitDiagnostics(true);
   }
 
+  public applyVRZoomScale(): void {
+    if (!this.host.renderer.xr.isPresenting) return;
+    const zoomMult = this.host.getZoomMultiplier?.() ?? 1.0;
+    const scale = this.getSeatedScaleFactor(this.host.getCurrentScale()) * zoomMult;
+    this.host.sceneContainer.scale.setScalar(scale);
+  }
+
   public refreshSpatialLabel(force = false): void {
     if (!this.host.renderer.xr.isPresenting && !force) return;
     const payload = this.host.adapter.getCurrentLabelPayload();
     const sourceLabel = this.host.adapter.getActiveSource() || 'ready';
-    const hash = `${payload.id}|${payload.title}|${payload.scaleLabel}|${sourceLabel}|${this.diagnostics.features.handTracking}`;
+    const zoomStr = (this.host.getZoomMultiplier?.() ?? 1).toFixed(2);
+    const hash = `${payload.id}|${payload.title}|${payload.scaleLabel}|${sourceLabel}|${zoomStr}|${this.diagnostics.features.handTracking}`;
     if (!force && hash === this.lastRenderedLabelHash) return;
     this.lastRenderedLabelHash = hash;
     this.drawSpatialLabelCanvas(payload);
@@ -410,6 +574,7 @@ export class WebXRControllerRig {
     const inputInfos: XRInputSourceInfo[] = [];
     let anyHandActive = false;
     let anyTrackedHandJoints = false;
+    this.hoveredActionThisFrame = null;
 
     const sources = Array.from(this.currentSession.inputSources);
     for (let i = 0; i < sources.length; i++) {
@@ -469,6 +634,14 @@ export class WebXRControllerRig {
       this.updateInputVisualsAndManipulation(i, source, ctrlObj, handObj, visibleJoints, trackingState, delta);
     }
 
+    // Apply unified VR HUD hover highlight across either left or right hand/controller
+    this.hoveredHudButton = null;
+    for (const btn of this.vrHudButtons) {
+      const isHot = btn.action === this.hoveredActionThisFrame;
+      btn.material.color.setHex(isHot ? btn.hoverColor : btn.baseColor);
+      if (isHot) this.hoveredHudButton = btn;
+    }
+
     this.diagnostics.inputSources = inputInfos;
     if (anyTrackedHandJoints) {
       this.diagnostics.features.handTracking = 'active';
@@ -483,9 +656,26 @@ export class WebXRControllerRig {
       }
     }
 
+    this.metaQuest.updateFrame(performance.now());
+    this.applyVRZoomScale();
+
     this.diagnostics.activeInteractionSource = this.host.adapter.getActiveSource();
     this.diagnostics.isManipulatingSpecimen = this.host.adapter.isManipulating();
     this.diagnostics.selectedTargetLabel = this.host.adapter.getCurrentLabelPayload().title;
+    const mqStats = this.metaQuest.getStats();
+    this.diagnostics.ratkPlanesCount = mqStats.planesCount;
+    this.diagnostics.ratkMeshesCount = mqStats.meshesCount;
+    this.diagnostics.vrZoomMultiplier = this.host.getZoomMultiplier?.() ?? 1.0;
+    const locoState = this.host.getLocomotionState?.();
+    if (locoState) {
+      this.diagnostics.locomotionPosition = locoState.position;
+      this.diagnostics.locomotionTargetLabel = locoState.targetLabel;
+    }
+
+    if (this.activeTeleportSourceSlot === null) {
+      this.teleportVisualGroup.visible = false;
+    }
+
     this.refreshSpatialLabel(false);
 
     // Throttle React diagnostics updates to ~5 Hz while presenting
@@ -502,6 +692,7 @@ export class WebXRControllerRig {
     if (this.currentSession) {
       this.detachSessionListeners(this.currentSession);
     }
+    this.metaQuest.dispose();
     this.labelTexture.dispose();
   }
 
@@ -517,31 +708,36 @@ export class WebXRControllerRig {
       controller.name = `XRController_${i}`;
 
       const rayMat = new THREE.LineBasicMaterial({
-        color: 0xe6b65c,
+        color: 0xf5d547,
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.9,
       });
       const rayLine = new THREE.Line(rayGeo, rayMat);
       rayLine.scale.z = 1;
       controller.add(rayLine);
 
+      // Keep raycast reticles in world space so they stay aligned after VR teleportation/snap-turn
       const reticle = new THREE.Mesh(
         new THREE.RingGeometry(0.008, 0.014, 16),
-        new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({ color: 0xf5d547, side: THREE.DoubleSide })
       );
       reticle.visible = false;
-      this.xrRigGroup.add(reticle);
+      this.host.scene.add(reticle);
 
       this.controllerRays.push(rayLine);
       this.controllerReticles.push(reticle);
       this.controllers.push(controller);
       this.xrRigGroup.add(controller);
 
-      // 2. Controller Grip Fallback (procedural ergonomic Quest-style wand without external GLTF CDN dependency)
+      // 2. Official Meta Quest / WebXR Input Profiles controller model + procedural grip fallback
       const grip = this.host.renderer.xr.getControllerGrip(i);
       grip.name = `XRControllerGrip_${i}`;
       const gripGroup = this.createProceduralControllerGrip();
       grip.add(gripGroup);
+      const controllerModel = this.controllerModelFactory.createControllerModel(grip);
+      grip.add(controllerModel);
+      this.proceduralGrips.push(gripGroup);
+      this.controllerModels.push(controllerModel);
       this.controllerGrips.push(grip);
       this.xrRigGroup.add(grip);
 
@@ -585,7 +781,7 @@ export class WebXRControllerRig {
 
       controller.addEventListener('connected', (event) => {
         const inputSrc = (event as unknown as { data: XRInputSource }).data;
-        // Show procedural grip only when this source is a controller (not pure hand tracking)
+        // Show controller grip only when this source is a controller (not pure hand tracking)
         gripGroup.visible = !inputSrc?.hand;
         rayLine.visible = true;
         this.logEvent(
@@ -607,6 +803,53 @@ export class WebXRControllerRig {
       this.hands.push(hand);
       this.xrRigGroup.add(hand);
     }
+  }
+
+  private setupTeleportVisuals(): void {
+    this.teleportVisualGroup.name = 'VRTeleportLocomotionVisuals';
+    this.teleportVisualGroup.visible = false;
+    this.host.scene.add(this.teleportVisualGroup);
+
+    const initialPts: THREE.Vector3[] = [];
+    for (let i = 0; i < MAX_TELEPORT_ARC_POINTS; i++) {
+      initialPts.push(new THREE.Vector3(0, 0, 0));
+    }
+    this.teleportArcGeo = new THREE.BufferGeometry().setFromPoints(initialPts);
+    this.teleportArcMat = new THREE.LineBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.92,
+    });
+    this.teleportArcLine = new THREE.Line(this.teleportArcGeo, this.teleportArcMat);
+    this.teleportArcLine.frustumCulled = false;
+    this.teleportVisualGroup.add(this.teleportArcLine);
+
+    const ringGeo = new THREE.RingGeometry(0.14, 0.21, 32);
+    ringGeo.rotateX(-Math.PI / 2);
+    this.teleportTargetRing = new THREE.Mesh(
+      ringGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.88,
+      })
+    );
+    this.teleportVisualGroup.add(this.teleportTargetRing);
+
+    const beaconGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.22, 24, 1, true);
+    beaconGeo.translate(0, 0.11, 0);
+    this.teleportBeaconMesh = new THREE.Mesh(
+      beaconGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+      })
+    );
+    this.teleportVisualGroup.add(this.teleportBeaconMesh);
   }
 
   private createProceduralControllerGrip(): THREE.Group {
@@ -636,7 +879,7 @@ export class WebXRControllerRig {
   }
 
   private setupSeatedPedestalAndHud(): void {
-    // Subtle seated tabletop reference ring
+    // Stationary tabletop reference ring anchored beneath the specimen in world space
     const pedestalGeo = new THREE.RingGeometry(0.32, 0.34, 48);
     pedestalGeo.rotateX(-Math.PI / 2);
     const pedestalMat = new THREE.MeshBasicMaterial({
@@ -647,13 +890,14 @@ export class WebXRControllerRig {
     });
     this.seatedPedestalMesh = new THREE.Mesh(pedestalGeo, pedestalMat);
     this.seatedPedestalMesh.name = 'SeatedVRPedestalRing';
-    this.xrRigGroup.add(this.seatedPedestalMesh);
+    this.seatedPedestalMesh.visible = false;
+    this.host.scene.add(this.seatedPedestalMesh);
 
-    // Spatial Label Card + Tactile VR Action Bar
+    // Spatial Label Card + Tactile VR Action Bar (travels with user rig)
     this.vrHudGroup.name = 'VRSpatialLabelHUD';
     this.xrRigGroup.add(this.vrHudGroup);
 
-    const cardGeo = new THREE.PlaneGeometry(0.58, 0.326);
+    const cardGeo = new THREE.PlaneGeometry(0.68, 0.34);
     const cardMat = new THREE.MeshBasicMaterial({
       map: this.labelTexture,
       transparent: true,
@@ -665,13 +909,16 @@ export class WebXRControllerRig {
     const buttonDefs: Array<{ action: VRHudAction; label: string; color: number; hover: number }> = [
       { action: 'prevLabel', label: '< Label', color: 0x1e293b, hover: 0x38bdf8 },
       { action: 'nextLabel', label: 'Label >', color: 0x1e293b, hover: 0x38bdf8 },
+      { action: 'zoomOut', label: 'Zoom -', color: 0x1e293b, hover: 0x38bdf8 },
+      { action: 'zoomIn', label: 'Zoom +', color: 0x1e293b, hover: 0x38bdf8 },
+      { action: 'warpThoracic', label: 'Step In', color: 0x162b3b, hover: 0x38bdf8 },
       { action: 'cycleScale', label: 'Scale', color: 0x1e293b, hover: 0xe6b65c },
       { action: 'resetScene', label: 'Reset', color: 0x2b2416, hover: 0xf59e0b },
       { action: 'exitVR', label: 'Exit VR', color: 0x451a20, hover: 0xf43f5e },
     ];
 
-    const btnWidth = 0.106;
-    const gap = 0.01;
+    const btnWidth = 0.080;
+    const gap = 0.006;
     const totalW = buttonDefs.length * btnWidth + (buttonDefs.length - 1) * gap;
     const startX = -totalW / 2 + btnWidth / 2;
 
@@ -684,13 +931,13 @@ export class WebXRControllerRig {
       });
       const btnMesh = new THREE.Mesh(btnGeo, btnMat);
       btnMesh.name = `VRHudButton_${def.action}`;
-      btnMesh.position.set(startX + idx * (btnWidth + gap), -0.195, 0.008);
+      btnMesh.position.set(startX + idx * (btnWidth + gap), -0.205, 0.008);
       btnMesh.userData = { vrAction: def.action };
 
       // Crisp canvas label face on button front
       const lblTex = this.createButtonTexture(def.label, def.action === 'exitVR' ? '#fda4af' : '#f8fafc');
       const lblPlane = new THREE.Mesh(
-        new THREE.PlaneGeometry(btnWidth - 0.008, 0.036),
+        new THREE.PlaneGeometry(btnWidth - 0.006, 0.036),
         new THREE.MeshBasicMaterial({ map: lblTex, transparent: true })
       );
       lblPlane.position.z = 0.0065;
@@ -733,43 +980,43 @@ export class WebXRControllerRig {
 
     ctx.clearRect(0, 0, w, h);
 
-    // Background card
-    ctx.fillStyle = 'rgba(11, 13, 19, 0.94)';
+    // Editorial Charcoal & Yellow Spatial Label Card
+    ctx.fillStyle = 'rgba(20, 21, 20, 0.96)';
     ctx.beginPath();
-    ctx.roundRect(8, 8, w - 16, h - 16, 26);
+    ctx.roundRect(8, 8, w - 16, h - 16, 22);
     ctx.fill();
 
     ctx.lineWidth = 4;
-    ctx.strokeStyle = payload.accentHex || '#e6b65c';
+    ctx.strokeStyle = '#F5D547';
     ctx.stroke();
 
     // Header badge
-    ctx.fillStyle = 'rgba(230, 182, 92, 0.16)';
+    ctx.fillStyle = '#F5D547';
     ctx.beginPath();
-    ctx.roundRect(38, 34, 340, 42, 10);
+    ctx.roundRect(38, 34, 340, 42, 8);
     ctx.fill();
 
-    ctx.fillStyle = payload.accentHex || '#e6b65c';
-    ctx.font = '700 21px ui-monospace, monospace';
+    ctx.fillStyle = '#141514';
+    ctx.font = '700 20px "IBM Plex Mono", ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(payload.badge.slice(0, 28), 54, 55);
+    ctx.fillText(payload.badge.slice(0, 26), 54, 55);
 
     // Scale tag right side
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '600 20px ui-monospace, monospace';
+    ctx.fillStyle = '#B7B5AA';
+    ctx.font = '600 20px "IBM Plex Mono", ui-monospace, monospace';
     ctx.textAlign = 'right';
     ctx.fillText(payload.scaleLabel.slice(0, 32), w - 42, 55);
 
-    // Title
-    ctx.fillStyle = '#f8fafc';
-    ctx.font = '800 40px Inter, system-ui, sans-serif';
+    // Title (Editorial Serif)
+    ctx.fillStyle = '#FAF7EC';
+    ctx.font = '700 40px "Playfair Display", Georgia, serif';
     ctx.textAlign = 'left';
     ctx.fillText(payload.title.slice(0, 38), 38, 122);
 
     // Subtitle
-    ctx.fillStyle = '#e6b65c';
-    ctx.font = '600 24px Inter, system-ui, sans-serif';
+    ctx.fillStyle = '#F5D547';
+    ctx.font = '600 24px "Plus Jakarta Sans", system-ui, sans-serif';
     ctx.fillText(payload.subtitle.slice(0, 56), 38, 164);
 
     // Metric box
@@ -799,8 +1046,9 @@ export class WebXRControllerRig {
 
     // Footer interaction hint + diagnostics snippet
     ctx.fillStyle = '#94a3b8';
-    ctx.font = '500 19px ui-monospace, monospace';
-    const handStatus = `Hand Tracking: ${this.diagnostics.features.handTracking}  |  Pinch/Trigger: Select or Move+Rotate`;
+    ctx.font = '500 18px ui-monospace, monospace';
+    const zoomStr = `${(this.host.getZoomMultiplier?.() ?? 1).toFixed(1)}x`;
+    const handStatus = `Zoom: ${zoomStr}  |  Grip / L-Stick: Teleport  |  R-Stick: Zoom  |  Trigger: Select`;
     ctx.fillText(handStatus, 38, h - 44);
 
     this.labelTexture.needsUpdate = true;
@@ -859,16 +1107,37 @@ export class WebXRControllerRig {
       scale: this.host.sceneContainer.scale.clone(),
     };
 
+    // Enable transparent passthrough when launching Mixed Reality (immersive-ar)
+    const isPassthrough =
+      this.activeSessionMode === 'immersive-ar' ||
+      session.environmentBlendMode === 'alpha-blend' ||
+      session.environmentBlendMode === 'additive';
+    if (isPassthrough) {
+      const clearColor = new THREE.Color();
+      this.host.renderer.getClearColor(clearColor);
+      this.arBackdropSnapshot = {
+        background: this.host.scene.background,
+        fog: this.host.scene.fog,
+        clearColor,
+        clearAlpha: this.host.renderer.getClearAlpha(),
+      };
+      this.host.scene.background = null;
+      this.host.scene.fog = null;
+      this.host.renderer.setClearColor(0x000000, 0);
+    }
+
     // Determine effective reference space type
     const enabledFeatures = (session as XRSession & { enabledFeatures?: string[] }).enabledFeatures;
     const hasLocalFloor = enabledFeatures ? enabledFeatures.includes('local-floor') : true;
     this.activeReferenceSpaceType = hasLocalFloor ? 'local-floor' : 'local';
 
     this.xrRigGroup.visible = true;
+    this.seatedPedestalMesh.visible = true;
     this.host.adapter.setVRPresenting(true);
     this.recenterSeatedSpecimen();
 
     this.diagnostics.sessionActive = true;
+    this.diagnostics.sessionMode = this.activeSessionMode || 'immersive-vr';
     this.diagnostics.isPresenting = true;
     this.diagnostics.referenceSpaceType = this.activeReferenceSpaceType;
     this.diagnostics.environmentBlendMode = session.environmentBlendMode || 'opaque';
@@ -881,7 +1150,7 @@ export class WebXRControllerRig {
 
     this.logEvent(
       'session',
-      `WebXR session started (refSpace: ${this.activeReferenceSpaceType}, blend: ${session.environmentBlendMode})`,
+      `WebXR ${this.diagnostics.sessionMode} started (refSpace: ${this.activeReferenceSpaceType}, blend: ${session.environmentBlendMode})`,
       'info'
     );
     this.host.onSessionStateChange?.(true);
@@ -893,12 +1162,36 @@ export class WebXRControllerRig {
       this.detachSessionListeners(this.currentSession);
     }
     this.currentSession = null;
+    this.activeSessionMode = null;
     this.activeSelectSources.clear();
     this.activeSqueezeSources.clear();
+    this.activeTeleportSourceSlot = null;
+    this.pendingTeleportHit = null;
+    this.stickTeleportArmed = [false, false];
+    this.snapTurnArmed = [false, false];
     this.hoveredHudButton = null;
+    this.hoveredActionThisFrame = null;
 
     this.xrRigGroup.visible = false;
+    this.seatedPedestalMesh.visible = false;
+    this.teleportVisualGroup.visible = false;
+    for (const reticle of this.controllerReticles) {
+      reticle.visible = false;
+    }
+    this.host.onResetLocomotion?.();
     this.host.adapter.setVRPresenting(false);
+    this.metaQuest.notifySessionEnded();
+
+    // Restore scene backdrop if Mixed Reality passthrough cleared it
+    if (this.arBackdropSnapshot) {
+      this.host.scene.background = this.arBackdropSnapshot.background;
+      this.host.scene.fog = this.arBackdropSnapshot.fog;
+      this.host.renderer.setClearColor(
+        this.arBackdropSnapshot.clearColor,
+        this.arBackdropSnapshot.clearAlpha
+      );
+      this.arBackdropSnapshot = null;
+    }
 
     // Restore exact pre-VR desktop transform
     if (this.desktopSnapshot) {
@@ -909,12 +1202,17 @@ export class WebXRControllerRig {
     }
 
     this.diagnostics.sessionActive = false;
+    this.diagnostics.sessionMode = null;
     this.diagnostics.isPresenting = false;
     this.diagnostics.referenceSpaceType = 'none';
     this.diagnostics.viewerTrackingState = 'unavailable';
     this.diagnostics.inputSources = [];
     this.diagnostics.activeInteractionSource = null;
     this.diagnostics.isManipulatingSpecimen = false;
+    this.diagnostics.ratkPlanesCount = 0;
+    this.diagnostics.ratkMeshesCount = 0;
+    this.diagnostics.locomotionPosition = [0, 0, 0];
+    this.diagnostics.locomotionTargetLabel = null;
     this.diagnostics.features.handTracking = this.diagnostics.isImmersiveVRSupported ? 'available' : 'unsupported';
     this.diagnostics.features.localFloor = this.diagnostics.isImmersiveVRSupported ? 'available' : 'unsupported';
 
@@ -1110,25 +1408,54 @@ export class WebXRControllerRig {
     const ray = this.resolveSourceRay(source);
     if (!ray) return;
 
-    // Hover feedback against HUD buttons & hotspots
+    // Hover feedback against HUD buttons & hotspots (world-space reticle + world-space HMD lookAt)
     const hoverRes = this.host.adapter.handleHoverRay(ray.origin, ray.direction);
     if (reticle) {
       if (hoverRes.kind !== 'none' && hoverRes.point) {
         reticle.visible = true;
         reticle.position.copy(hoverRes.point);
-        reticle.lookAt(this.host.renderer.xr.getCamera().position);
+        this.host.renderer.xr.getCamera().getWorldPosition(this.tempCamWorldPos);
+        reticle.lookAt(this.tempCamWorldPos);
       } else {
         reticle.visible = false;
       }
     }
 
-    if (slot === 1 || this.diagnostics.inputSources.length <= 1) {
-      const hoveredAction = hoverRes.kind === 'hudAction' ? hoverRes.action : null;
-      for (const btn of this.vrHudButtons) {
-        const isHot = btn.action === hoveredAction;
-        btn.material.color.setHex(isHot ? btn.hoverColor : btn.baseColor);
-        if (isHot) this.hoveredHudButton = btn;
-      }
+    if (hoverRes.kind === 'hudAction' && hoverRes.action) {
+      this.hoveredActionThisFrame = hoverRes.action;
+    }
+
+    // Prefer official Meta Quest / WebXR input profile model if loaded; keep procedural grip as offline fallback
+    const ctrlModel = this.controllerModels[slot] as (THREE.Object3D & { motionController?: unknown }) | undefined;
+    const procGrip = this.proceduralGrips[slot];
+    if (procGrip && ctrlModel?.motionController) {
+      procGrip.visible = false;
+    }
+
+    // Check Teleport Aiming (Grip Squeeze OR Left Thumbstick Forward)
+    const slotKey = slot === 0 ? 0 : 1;
+    const thumbstickX = source.gamepad && source.gamepad.axes.length >= 4 ? (source.gamepad.axes[2] ?? 0) : 0;
+    const thumbstickY = source.gamepad && source.gamepad.axes.length >= 4 ? (source.gamepad.axes[3] ?? 0) : 0;
+
+    const isLeftOrPrimaryStickTeleport = source.handedness === 'left' && thumbstickY < -0.55;
+    if (isLeftOrPrimaryStickTeleport) {
+      this.stickTeleportArmed[slotKey] = true;
+    } else if (this.stickTeleportArmed[slotKey] && thumbstickY > -0.25) {
+      this.stickTeleportArmed[slotKey] = false;
+      this.commitPendingTeleport(source.handedness);
+    }
+
+    const isTeleportAiming = this.activeSqueezeSources.has(source) || this.stickTeleportArmed[slotKey];
+    if (isTeleportAiming && this.host.computeTeleportArc) {
+      this.activeTeleportSourceSlot = slot;
+      const arc = this.host.computeTeleportArc(ray.origin, ray.direction);
+      this.updateTeleportArcVisuals(arc);
+      if (rayLine) rayLine.visible = false;
+      if (reticle) reticle.visible = false;
+    } else if (this.activeTeleportSourceSlot === slot) {
+      this.activeTeleportSourceSlot = null;
+      this.teleportVisualGroup.visible = false;
+      this.pendingTeleportHit = null;
     }
 
     // Active pinch / trigger manipulation
@@ -1136,12 +1463,94 @@ export class WebXRControllerRig {
       this.host.adapter.updateXRInteraction(ray.sourceId, ray.origin, ray.orientation);
     }
 
-    // Controller thumbstick fallback for seated rotation (left/right stick) and distance (right/left stick)
+    // Controller thumbsticks:
+    // - Left Thumbstick X: Comfort Snap Turn (±30°)
+    // - Right Thumbstick Y: Continuous Zoom In / Zoom Out through thoracic anatomy
+    // - Right Thumbstick X: Specimen Yaw Rotation
     if (source.gamepad && source.gamepad.axes.length >= 4) {
-      const axisX = source.gamepad.axes[2] ?? 0;
-      const axisY = source.gamepad.axes[3] ?? 0;
-      this.host.adapter.applyThumbstickManipulation(axisX, axisY, delta, source.handedness === 'left');
+      if (source.handedness === 'left') {
+        if (Math.abs(thumbstickX) > 0.68 && !this.snapTurnArmed[slotKey]) {
+          this.snapTurnArmed[slotKey] = true;
+          this.host.onSnapTurn?.(-Math.sign(thumbstickX) * (Math.PI / 6));
+          this.logEvent('teleport', `Snap turned ${thumbstickX > 0 ? 'right' : 'left'} 30°`, 'info');
+        } else if (Math.abs(thumbstickX) < 0.32) {
+          this.snapTurnArmed[slotKey] = false;
+        }
+      } else {
+        if (Math.abs(thumbstickY) > 0.18) {
+          const factor = 1 - thumbstickY * 1.25 * delta;
+          this.host.onZoomDelta?.(factor);
+        }
+        if (Math.abs(thumbstickX) > 0.18) {
+          this.host.adapter.applyThumbstickManipulation(thumbstickX, 0, delta, false);
+        }
+      }
     }
+  }
+
+  private updateTeleportArcVisuals(arc: {
+    points: THREE.Vector3[];
+    hitPoint: THREE.Vector3 | null;
+    hitNormal: THREE.Vector3 | null;
+    hitLabel: string | null;
+    hitKind: 'anatomy' | 'floor' | 'none';
+    valid: boolean;
+  }): void {
+    if (arc.points.length < 2) {
+      this.teleportVisualGroup.visible = false;
+      this.pendingTeleportHit = null;
+      return;
+    }
+
+    this.teleportVisualGroup.visible = true;
+    const posAttr = this.teleportArcGeo.getAttribute('position') as THREE.BufferAttribute;
+    const lastPt = arc.points[arc.points.length - 1];
+    for (let i = 0; i < MAX_TELEPORT_ARC_POINTS; i++) {
+      const pt = i < arc.points.length ? arc.points[i] : lastPt;
+      posAttr.setXYZ(i, pt.x, pt.y, pt.z);
+    }
+    posAttr.needsUpdate = true;
+    this.teleportArcGeo.setDrawRange(0, Math.min(arc.points.length, MAX_TELEPORT_ARC_POINTS));
+
+    const arcHex = !arc.valid ? 0xf43f5e : arc.hitKind === 'anatomy' ? 0xe6b65c : 0x38bdf8;
+    this.teleportArcMat.color.setHex(arcHex);
+    (this.teleportTargetRing.material as THREE.MeshBasicMaterial).color.setHex(arcHex);
+    (this.teleportBeaconMesh.material as THREE.MeshBasicMaterial).color.setHex(arcHex);
+
+    if (arc.valid && arc.hitPoint && arc.hitKind !== 'none') {
+      this.teleportTargetRing.visible = true;
+      this.teleportBeaconMesh.visible = true;
+      this.teleportTargetRing.position.copy(arc.hitPoint).addScaledVector(arc.hitNormal || this.tempUpVec, 0.015);
+      this.teleportBeaconMesh.position.copy(arc.hitPoint);
+
+      if (arc.hitNormal) {
+        this.teleportTargetRing.quaternion.setFromUnitVectors(this.tempUpVec, arc.hitNormal);
+      } else {
+        this.teleportTargetRing.quaternion.identity();
+      }
+
+      this.pendingTeleportHit = {
+        point: arc.hitPoint.clone(),
+        kind: arc.hitKind,
+        label: arc.hitLabel,
+      };
+    } else {
+      this.teleportTargetRing.visible = false;
+      this.teleportBeaconMesh.visible = false;
+      this.pendingTeleportHit = null;
+    }
+  }
+
+  private commitPendingTeleport(handedness: string): void {
+    if (this.pendingTeleportHit && this.host.onTeleportExecute) {
+      const { point, kind, label } = this.pendingTeleportHit;
+      this.host.onTeleportExecute(point, kind, label);
+      this.logEvent('teleport', `Teleported (${handedness}) -> ${label || kind}`, 'info');
+    }
+    this.activeTeleportSourceSlot = null;
+    this.pendingTeleportHit = null;
+    this.teleportVisualGroup.visible = false;
+    this.emitDiagnostics(true);
   }
 
   private getSeatedScaleFactor(scale: ScaleLevel): number {

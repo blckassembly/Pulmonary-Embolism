@@ -3,35 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Glasses,
-  Info,
   RotateCcw,
   Sun,
   Moon,
-  Sparkles,
-  Layers,
-  Route,
   ChevronLeft,
   ChevronRight,
-  Compass,
-  Heart,
-  Droplet,
-  Wind,
-  Box,
-  Stethoscope,
-  Blocks,
+  LayoutGrid,
+  Menu,
+  X,
 } from 'lucide-react';
-import { ScaleLevel, ExplorerAnatomyId } from '../types/biomedical.ts';
-import { EXPLORER_ANATOMY_STRUCTURES } from '../data/explorerAnatomyData.ts';
+import { ScaleLevel } from '../types/biomedical.ts';
+import { AnatomicalScaleLauncher } from './AnatomicalScaleLauncher.tsx';
 
 export interface LeftNavProps {
   currentScale: ScaleLevel;
   onSelectScale: (scale: ScaleLevel) => void;
-  selectedStructureId: ExplorerAnatomyId;
-  onSelectStructure: (id: ExplorerAnatomyId) => void;
-  onOpenProvenance: () => void;
   onResetCamera: () => void;
   onToggleXR: () => void;
   isXRSupported: boolean;
@@ -39,23 +28,28 @@ export interface LeftNavProps {
   isWebXRPanelOpen?: boolean;
   isDarkTheme: boolean;
   onToggleTheme: () => void;
-  onToggleExplainPanel: () => void;
-  isExplainPanelOpen: boolean;
-  onToggleClotPath: () => void;
-  isClotPathActive: boolean;
-  onTogglePatientContext: () => void;
-  isPatientContextOpen: boolean;
-  onOpenBlockchainSearch: () => void;
-  isBlockchainSearchOpen: boolean;
-  onOpenXdcNetwork: () => void;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
+
+const BrandEmblem: React.FC<{ className?: string }> = ({ className = 'w-6 h-6' }) => (
+  <svg
+    viewBox="0 0 32 32"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.3"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+  >
+    <path d="M16 3L27 7.5V16C27 22.8 22.1 27.6 16 29.5C9.9 27.6 5 22.8 5 16V7.5L16 3Z" />
+    <path d="M16 9.5L17.9 13.7L22.5 14.2L19 17.3L20 21.8L16 19.4L12 21.8L13 17.3L9.5 14.2L14.1 13.7L16 9.5Z" />
+  </svg>
+);
 
 export const LeftNav: React.FC<LeftNavProps> = ({
   currentScale,
   onSelectScale,
-  selectedStructureId,
-  onSelectStructure,
-  onOpenProvenance,
   onResetCamera,
   onToggleXR,
   isXRSupported,
@@ -63,375 +57,359 @@ export const LeftNav: React.FC<LeftNavProps> = ({
   isWebXRPanelOpen = false,
   isDarkTheme,
   onToggleTheme,
-  onToggleExplainPanel,
-  isExplainPanelOpen,
-  onToggleClotPath,
-  isClotPathActive,
-  onTogglePatientContext,
-  isPatientContextOpen,
-  onOpenBlockchainSearch,
-  isBlockchainSearchOpen,
-  onOpenXdcNetwork,
+  onCollapsedChange,
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [isScaleLauncherOpen, setIsScaleLauncherOpen] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
 
-  const scaleTabs: { id: ScaleLevel; label: string; metric: string }[] = [
-    { id: 'thoracic', label: 'Thoracic System', metric: '30 cm' },
-    { id: 'vessel', label: 'Artery Cutaway', metric: '8 mm' },
-    { id: 'clot', label: 'Thrombus Body', metric: '4 mm' },
-    { id: 'microscopic', label: 'Fibrin Matrix', metric: '50 µm' },
-  ];
-
-  const anatomyIcons: Record<ExplorerAnatomyId, React.ReactNode> = {
-    deepVeins: <Droplet className="w-3.5 h-3.5 text-blue-400 shrink-0" />,
-    heart: <Heart className="w-3.5 h-3.5 text-rose-400 shrink-0" />,
-    pulmonaryArtery: <Layers className="w-3.5 h-3.5 text-amber-400 shrink-0" />,
-    lungs: <Wind className="w-3.5 h-3.5 text-sky-400 shrink-0" />,
+  const toggleCollapsed = () => {
+    const next = !isCollapsed;
+    setIsCollapsed(next);
+    onCollapsedChange?.(next);
   };
 
+  useEffect(() => {
+    if (!isScaleLauncherOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsScaleLauncherOpen(false);
+      }
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-scale-launcher-trigger="true"]')) {
+        return;
+      }
+      if (popoverRef.current && !popoverRef.current.contains(target)) {
+        setIsScaleLauncherOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [isScaleLauncherOpen]);
+
   return (
-    <nav
-      className={`fixed top-0 left-0 bottom-0 z-30 flex flex-col border-r select-none transition-all duration-300 backdrop-blur-xl ${
-        isCollapsed ? 'w-16' : 'w-64'
-      } ${
-        isDarkTheme
-          ? 'bg-[#0a0b0e]/95 border-[#22242c] text-white shadow-2xl shadow-black/80'
-          : 'bg-white/95 border-slate-300 text-slate-900 shadow-xl shadow-slate-200/60'
-      }`}
-    >
-      {/* 1. Header */}
-      <div
-        className={`p-3.5 border-b flex items-center justify-between shrink-0 ${
-          isDarkTheme ? 'border-[#1f2129]' : 'border-slate-200'
-        }`}
-      >
-        {!isCollapsed && (
-          <div className="flex flex-col min-w-0">
-            <span className="text-base font-bold tracking-tight truncate leading-tight">
-              Embolism Explorer
-            </span>
-            <span className="text-xs text-slate-400 truncate leading-tight font-mono mt-0.5">
-              Disease POV • PE
-            </span>
-          </div>
-        )}
+    <>
+      {/* Mobile Compact Floating Trigger (keeps 3D canvas unobstructed on <768px screens) */}
+      <div className="fixed top-3 left-3 z-30 flex items-center gap-2 md:hidden">
+        <button
+          type="button"
+          onClick={() => setIsMobileOpen(true)}
+          aria-label="Open Anatomical Scale Menu"
+          className={`min-h-[44px] px-3.5 rounded-lg border text-xs font-bold tracking-[0.06em] uppercase flex items-center gap-2 transition-colors ${
+            isDarkTheme
+              ? 'bg-[#141513] border-[#34362F] text-[#FAF7EC] hover:bg-[#1E201C]'
+              : 'bg-[#FAF7EC] border-[#141514] text-[#141514] hover:bg-[#F2EDE0]'
+          }`}
+        >
+          <Menu className="w-4 h-4" />
+          <span>Scale</span>
+        </button>
 
         <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          title={isCollapsed ? 'Expand Navigation' : 'Collapse Navigation'}
-          className={`p-1.5 rounded-md transition-colors ${
-            isCollapsed ? 'mx-auto' : ''
+          type="button"
+          onClick={onToggleXR}
+          aria-label="Open WebAR and WebXR Controls"
+          className={`min-h-[44px] px-3.5 rounded-lg border text-xs font-bold tracking-[0.06em] uppercase flex items-center gap-1.5 transition-colors ${
+            isXRSessionActive
+              ? 'bg-[#C82828] text-white border-[#141514]'
+              : isWebXRPanelOpen
+              ? 'bg-[#141514] text-[#F5D547] border-[#F5D547]'
+              : 'bg-[#F5D547] text-[#141514] border-[#141514] hover:bg-[#EBC834]'
+          }`}
+        >
+          <Glasses className="w-4 h-4" />
+          <span>{isXRSessionActive ? 'VR Live' : 'WebAR'}</span>
+        </button>
+      </div>
+
+      {/* Mobile Scrim */}
+      {isMobileOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-[#141514]/55 md:hidden"
+          onClick={() => setIsMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Primary Editorial Sidebar Rail (Desktop collapsible rail + Mobile slide-in drawer) */}
+      <nav
+        aria-label="Anatomical Scale Navigation"
+        className={`fixed top-0 left-0 bottom-0 z-40 flex flex-col border-r select-none transition-transform md:transition-all duration-200 ${
+          isMobileOpen ? 'translate-x-0 w-[284px]' : '-translate-x-full md:translate-x-0'
+        } ${isCollapsed ? 'md:w-[68px]' : 'md:w-[276px]'} ${
+          isDarkTheme
+            ? 'bg-[#141513] border-[#2C2E28] text-[#FAF7EC]'
+            : 'bg-[#FAF7EC] border-[#141514]/25 text-[#141514]'
+        }`}
+      >
+        {/* 1. Signature Editorial Yellow Brand Header Band */}
+        <div
+          className={`px-3.5 py-3.5 border-b flex items-center justify-between shrink-0 transition-colors ${
+            isDarkTheme
+              ? 'bg-[#1A1B18] border-[#2C2E28] text-[#FAF7EC]'
+              : 'bg-[#F5D547] border-[#141514]/25 text-[#141514]'
+          }`}
+        >
+          {(!isCollapsed || isMobileOpen) && (
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className={`w-9 h-9 rounded-lg border flex items-center justify-center shrink-0 ${
+                  isDarkTheme
+                    ? 'bg-[#F5D547] border-[#F5D547] text-[#141514]'
+                    : 'bg-[#F5D547] border-[#141514] text-[#141514]'
+                }`}
+              >
+                <BrandEmblem className="w-5 h-5" />
+              </div>
+              <div className="flex flex-col min-w-0">
+                <span
+                  className={`text-[9px] font-bold tracking-[0.22em] uppercase leading-none ${
+                    isDarkTheme ? 'text-[#F5D547]' : 'text-[#141514]/80'
+                  }`}
+                >
+                  THE ATLAS
+                </span>
+                <span className="font-display text-[17px] font-bold tracking-tight truncate leading-tight mt-0.5">
+                  Anatomical <em className="italic font-semibold">Scale</em>
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Desktop Collapse Button */}
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            title={isCollapsed ? 'Expand Navigation' : 'Collapse Navigation'}
+            aria-label={isCollapsed ? 'Expand Navigation' : 'Collapse Navigation'}
+            className={`hidden md:inline-flex min-w-[38px] min-h-[38px] items-center justify-center rounded-lg border transition-colors ${
+              isCollapsed ? 'mx-auto' : ''
+            } ${
+              isDarkTheme
+                ? 'border-[#31332D] hover:bg-[#252721] text-[#FAF7EC]'
+                : 'border-[#141514]/25 hover:bg-[#141514]/10 text-[#141514]'
+            }`}
+          >
+            {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+          </button>
+
+          {/* Mobile Close Button */}
+          <button
+            type="button"
+            onClick={() => setIsMobileOpen(false)}
+            aria-label="Close Navigation"
+            className={`md:hidden min-w-[40px] min-h-[40px] inline-flex items-center justify-center rounded-lg border transition-colors ${
+              isDarkTheme
+                ? 'border-[#31332D] hover:bg-[#252721] text-[#FAF7EC]'
+                : 'border-[#141514]/25 hover:bg-[#141514]/10 text-[#141514]'
+            }`}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* 2. Primary Focus: Anatomical Scale at the Very Top */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3">
+          {!isCollapsed || isMobileOpen ? (
+            <div className="space-y-2.5">
+              <div className="px-0.5 flex items-center justify-between gap-2">
+                <span
+                  className={`text-[10px] font-bold tracking-[0.18em] uppercase ${
+                    isDarkTheme ? 'text-[#B7B5AA]' : 'text-[#444540]'
+                  }`}
+                >
+                  ANATOMICAL SCALE
+                </span>
+                <button
+                  type="button"
+                  data-scale-launcher-trigger="true"
+                  onClick={() => setIsScaleLauncherOpen((prev) => !prev)}
+                  title="Open expanded 3-column Anatomical Scale launcher"
+                  className={`inline-flex items-center gap-1.5 px-2.5 min-h-[30px] rounded-lg text-[11px] font-bold tracking-[0.04em] border transition-colors whitespace-nowrap shrink-0 ${
+                    isScaleLauncherOpen
+                      ? 'bg-[#141514] text-[#F5D547] border-[#F5D547]'
+                      : isDarkTheme
+                      ? 'border-[#32342D] text-[#FAF7EC] hover:bg-[#20221D]'
+                      : 'border-[#141514]/30 text-[#141514] bg-white/70 hover:bg-[#F5D547]/40'
+                  }`}
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  <span>{isScaleLauncherOpen ? 'Close' : 'Expand'}</span>
+                </button>
+              </div>
+
+              <AnatomicalScaleLauncher
+                currentScale={currentScale}
+                onSelectScale={(scale) => {
+                  onSelectScale(scale);
+                  setIsMobileOpen(false);
+                }}
+                isDarkTheme={isDarkTheme}
+                variant="inline"
+              />
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <button
+                type="button"
+                data-scale-launcher-trigger="true"
+                onClick={() => setIsScaleLauncherOpen((prev) => !prev)}
+                title="Open Anatomical Scale Launcher"
+                aria-label="Open Anatomical Scale Launcher"
+                className={`w-11 h-11 rounded-lg border flex items-center justify-center transition-colors ${
+                  isScaleLauncherOpen
+                    ? 'bg-[#F5D547] text-[#141514] border-[#141514]'
+                    : isDarkTheme
+                    ? 'bg-[#1C1E1A] text-[#FAF7EC] border-[#31332D] hover:bg-[#252721]'
+                    : 'bg-[#F2EDE0] text-[#141514] border-[#141514]/30 hover:bg-[#F5D547]/50'
+                }`}
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 3. Single Editorial Utility Dock (Reset, Theme, WebAR/VR) */}
+        <div
+          className={`p-2.5 border-t shrink-0 flex ${
+            isCollapsed && !isMobileOpen ? 'flex-col items-center gap-2' : 'items-center gap-1.5'
           } ${
             isDarkTheme
-              ? 'hover:bg-neutral-800 text-slate-400 hover:text-white'
-              : 'hover:bg-slate-100 text-slate-500'
+              ? 'border-[#2C2E28] bg-[#181916]'
+              : 'border-[#141514]/20 bg-[#F2EDE0]'
           }`}
         >
-          {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-        </button>
-      </div>
-
-      {/* 2. Disease POV Controls */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden p-2.5 space-y-4">
-        {/* Disease Progression Landmarks (4 Core PE Structures) */}
-        <div className="space-y-1.5">
-          {!isCollapsed && (
-            <div className="px-2 py-0.5 text-xs font-mono font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <Compass className="w-3.5 h-3.5 text-sky-400" />
-                Disease Stages
-              </span>
-              <span className="text-[11px] text-sky-400 font-bold">PE Path</span>
-            </div>
-          )}
-
-          {(['deepVeins', 'heart', 'pulmonaryArtery', 'lungs'] as ExplorerAnatomyId[]).map((id) => {
-            const struct = EXPLORER_ANATOMY_STRUCTURES[id];
-            const isSelected = selectedStructureId === id;
-            return (
-              <button
-                key={id}
-                onClick={() => onSelectStructure(id)}
-                title={`${struct.label} (${struct.sublabel})`}
-                className={`w-full text-left rounded-lg text-sm transition-all border flex items-center ${
-                  isCollapsed ? 'p-2.5 justify-center' : 'px-3 py-2 justify-between gap-2'
-                } ${
-                  isSelected
-                    ? isDarkTheme
-                      ? 'bg-sky-500/20 text-white border-sky-400 font-bold shadow-xs'
-                      : 'bg-sky-50 text-sky-950 border-sky-400 font-bold shadow-xs'
-                    : isDarkTheme
-                    ? 'bg-[#121318] text-slate-200 border-transparent hover:border-[#262832] hover:bg-[#181920]'
-                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  {anatomyIcons[id]}
-                  {!isCollapsed && <span className="truncate">{struct.label}</span>}
-                </div>
-                {!isCollapsed && isSelected && (
-                  <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse shrink-0" />
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Educational Layer & Animation */}
-        <div className="space-y-1.5 pt-2.5 border-t border-slate-700/30">
-          {!isCollapsed && (
-            <div className="px-2 py-0.5 text-xs font-mono font-semibold text-slate-400 uppercase tracking-wider">
-              Agnostic Learning
-            </div>
-          )}
-
           <button
-            onClick={onToggleExplainPanel}
-            title="Open 'Explain this view' cited learning layer & D3 hemodynamics"
-            className={`w-full text-left rounded-lg text-sm font-semibold transition-all border flex items-center ${
-              isCollapsed ? 'p-2.5 justify-center' : 'px-3 py-2 justify-between gap-2'
-            } ${
-              isExplainPanelOpen
-                ? 'bg-sky-500 text-black border-sky-400 shadow-[0_0_12px_rgba(56,189,248,0.35)]'
-                : isDarkTheme
-                ? 'bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border-sky-500/30'
-                : 'bg-sky-50 hover:bg-sky-100 text-sky-800 border-sky-300'
-            }`}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Sparkles className={`w-4 h-4 shrink-0 ${isExplainPanelOpen ? 'text-black' : 'text-sky-400'}`} />
-              {!isCollapsed && <span className="truncate">Explain View</span>}
-            </div>
-            {!isCollapsed && (
-              <span
-                className={`text-[11px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
-                  isExplainPanelOpen ? 'bg-black/20 text-black' : 'bg-sky-500/30 text-sky-300'
-                }`}
-              >
-                You.com
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={onToggleClotPath}
-            title="Toggle Clot Path Animation Bar (DVT to PE)"
-            className={`w-full text-left rounded-lg text-sm font-semibold transition-all border flex items-center ${
-              isCollapsed ? 'p-2.5 justify-center' : 'px-3 py-2 justify-between gap-2'
-            } ${
-              isClotPathActive
-                ? 'bg-amber-400 text-black border-amber-300 font-bold shadow-[0_0_12px_rgba(251,191,36,0.35)]'
-                : isDarkTheme
-                ? 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30'
-                : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
-            }`}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Route className={`w-4 h-4 shrink-0 ${isClotPathActive ? 'text-black' : 'text-amber-400'}`} />
-              {!isCollapsed && <span className="truncate">Clot Path Bar</span>}
-            </div>
-            {!isCollapsed && (
-              <span
-                className={`text-[11px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
-                  isClotPathActive ? 'bg-black/20 text-black' : 'bg-amber-500/30 text-amber-300'
-                }`}
-              >
-                DVT→PE
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={onTogglePatientContext}
-            aria-pressed={isPatientContextOpen}
-            title="Toggle Patient Clinical Context card for current clot stage"
-            className={`w-full text-left rounded-lg text-sm font-semibold transition-all border flex items-center ${
-              isCollapsed ? 'p-2.5 justify-center' : 'px-3 py-2 justify-between gap-2'
-            } ${
-              isPatientContextOpen
-                ? 'bg-emerald-500 text-black border-emerald-400 font-bold shadow-[0_0_12px_rgba(16,185,129,0.35)]'
-                : isDarkTheme
-                ? 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30'
-                : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
-            }`}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Stethoscope
-                className={`w-4 h-4 shrink-0 ${
-                  isPatientContextOpen ? 'text-black' : 'text-emerald-400'
-                }`}
-              />
-              {!isCollapsed && <span className="truncate">Patient Clinical Context</span>}
-            </div>
-          </button>
-
-          <button
-            onClick={onOpenBlockchainSearch}
-            aria-pressed={isBlockchainSearchOpen}
-            title="Open ENTHALPY × XDC Blockchain Research Search in a separate popup window"
-            className={`w-full text-left text-sm font-semibold transition-all border flex items-center ${
-              isCollapsed ? 'p-2.5 justify-center' : 'px-3 py-2 justify-between gap-2'
-            } ${
-              isBlockchainSearchOpen
-                ? isDarkTheme
-                  ? 'bg-white text-black border-white font-bold'
-                  : 'bg-black text-white border-black font-bold'
-                : isDarkTheme
-                ? 'bg-[#101216] hover:bg-[#171920] text-neutral-100 border-white/25'
-                : 'bg-white hover:bg-neutral-100 text-neutral-900 border-black/30'
-            }`}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Blocks className="w-4 h-4 shrink-0" />
-              {!isCollapsed && <span className="truncate font-mono text-xs uppercase">ENTHALPY × XDC</span>}
-            </div>
-            {!isCollapsed && (
-              <span
-                className={`text-[10px] font-mono px-1.5 py-0.5 border shrink-0 ${
-                  isBlockchainSearchOpen
-                    ? isDarkTheme
-                      ? 'border-black/40 text-black'
-                      : 'border-white/40 text-white'
-                    : isDarkTheme
-                    ? 'border-white/30 text-neutral-300'
-                    : 'border-black/30 text-neutral-700'
-                }`}
-              >
-                Search ↗
-              </span>
-            )}
-          </button>
-        </div>
-
-        {/* Disease Spatial Scale */}
-        <div className="space-y-1.5 pt-2.5 border-t border-slate-700/30">
-          {!isCollapsed && (
-            <div className="px-2 py-0.5 text-xs font-mono font-semibold text-slate-400 uppercase tracking-wider">
-              Anatomical Scale
-            </div>
-          )}
-
-          {scaleTabs.map((tab) => {
-            const isActive = currentScale === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => onSelectScale(tab.id)}
-                title={`${tab.label} (${tab.metric})`}
-                className={`w-full text-left rounded-lg text-sm transition-all border flex items-center ${
-                  isCollapsed ? 'p-2.5 justify-center' : 'px-3 py-2 justify-between gap-2'
-                } ${
-                  isActive
-                    ? isDarkTheme
-                      ? 'bg-neutral-800 text-white border-neutral-600 font-bold shadow-xs'
-                      : 'bg-slate-200 text-slate-900 border-slate-400 font-bold shadow-xs'
-                    : isDarkTheme
-                    ? 'bg-[#121318] text-slate-300 border-transparent hover:border-[#262832] hover:text-white'
-                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <Box className="w-4 h-4 text-slate-400 shrink-0" />
-                  {!isCollapsed && <span className="truncate">{tab.label}</span>}
-                </div>
-                {!isCollapsed && (
-                  <span className="text-xs font-mono text-slate-400 shrink-0">{tab.metric}</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Educational Safety Note */}
-        {!isCollapsed && (
-          <div
-            className={`p-3 rounded-xl border text-xs leading-relaxed ${
+            type="button"
+            onClick={onResetCamera}
+            title="Reset 3D View (R)"
+            aria-label="Reset 3D View"
+            className={`min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg border transition-colors ${
               isDarkTheme
-                ? 'bg-[#121318] border-[#22242d] text-slate-300'
-                : 'bg-slate-50 border-slate-200 text-slate-700'
+                ? 'hover:bg-[#242621] text-[#FAF7EC] border-[#31332D] bg-[#141513]'
+                : 'hover:bg-[#E7E1CF] text-[#141514] border-[#141514]/25 bg-[#FAF7EC]'
             }`}
           >
-            <div className="font-bold text-amber-400 mb-0.5">Illustrative Disease Model</div>
-            Not to scale and not patient-specific. General pathophysiology education only.
+            <RotateCcw className="w-4 h-4 shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            title={isDarkTheme ? 'Switch to Light Mode (T)' : 'Switch to Dark Mode (T)'}
+            aria-label={isDarkTheme ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            className={`min-h-[40px] px-2.5 flex items-center justify-center gap-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              isCollapsed && !isMobileOpen ? 'w-10 px-0' : ''
+            } ${
+              isDarkTheme
+                ? 'hover:bg-[#242621] text-[#FAF7EC] border-[#31332D] bg-[#141513]'
+                : 'hover:bg-[#E7E1CF] text-[#141514] border-[#141514]/25 bg-[#FAF7EC]'
+            }`}
+          >
+            {isDarkTheme ? (
+              <Sun className="w-4 h-4 text-[#F5D547] shrink-0" />
+            ) : (
+              <Moon className="w-4 h-4 text-[#141514] shrink-0" />
+            )}
+            {(!isCollapsed || isMobileOpen) && <span>{isDarkTheme ? 'Light' : 'Dark'}</span>}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              onToggleXR();
+              setIsMobileOpen(false);
+            }}
+            title={
+              isXRSessionActive
+                ? 'WebXR Session Active — Manage or Exit VR'
+                : isXRSupported
+                ? 'Enter WebAR / VR Session'
+                : 'Open WebAR / WebXR Controls'
+            }
+            className={`min-h-[40px] flex items-center justify-center gap-1.5 px-3 text-xs font-bold tracking-[0.04em] rounded-lg transition-colors whitespace-nowrap border ${
+              isCollapsed && !isMobileOpen ? 'w-10 px-0' : 'flex-1'
+            } ${
+              isXRSessionActive
+                ? 'bg-[#C82828] text-white border-[#141514] hover:bg-[#B22222]'
+                : isWebXRPanelOpen
+                ? 'bg-[#141514] text-[#F5D547] border-[#F5D547]'
+                : 'bg-[#F5D547] text-[#141514] border-[#141514] hover:bg-[#EBC834]'
+            }`}
+          >
+            <Glasses className="w-4 h-4 shrink-0" />
+            {(!isCollapsed || isMobileOpen) && (
+              <span>{isXRSessionActive ? 'VR Live' : isXRSupported ? 'Enter VR' : 'WebAR'}</span>
+            )}
+          </button>
+        </div>
+      </nav>
+
+      {/* Expanded 3-Column Anatomical Scale Popover */}
+      {isScaleLauncherOpen && (
+        <div
+          ref={popoverRef}
+          role="dialog"
+          aria-label="Anatomical Scale Launcher"
+          className={`fixed z-50 w-[320px] max-w-[calc(100vw-24px)] rounded-xl border shadow-2xl overflow-hidden ${
+            isCollapsed ? 'left-3 md:left-[80px] top-16 md:top-3' : 'left-3 md:left-[288px] top-16 md:top-3'
+          } ${
+            isDarkTheme
+              ? 'bg-[#141513] border-[#F5D547]/50 text-[#FAF7EC] shadow-black/80'
+              : 'bg-[#FAF7EC] border-[#141514] text-[#141514] shadow-black/15'
+          }`}
+        >
+          <div
+            className={`px-4 py-3 border-b flex items-center justify-between ${
+              isDarkTheme
+                ? 'border-[#2C2E28] bg-[#1A1B18]'
+                : 'border-[#141514]/25 bg-[#F5D547]'
+            }`}
+          >
+            <div>
+              <div
+                className={`text-[9px] font-bold tracking-[0.2em] uppercase ${
+                  isDarkTheme ? 'text-[#F5D547]' : 'text-[#141514]/80'
+                }`}
+              >
+                SPATIAL DEPTH
+              </div>
+              <div className="font-display text-base font-bold leading-tight mt-0.5">
+                Anatomical <em className="italic font-semibold">Views</em>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsScaleLauncherOpen(false)}
+              title="Close Anatomical Scale Launcher"
+              aria-label="Close Anatomical Scale Launcher"
+              className={`min-w-[36px] min-h-[36px] inline-flex items-center justify-center rounded-lg border transition-colors ${
+                isDarkTheme
+                  ? 'border-[#31332D] hover:bg-[#252721] text-[#FAF7EC]'
+                  : 'border-[#141514]/25 hover:bg-[#141514]/10 text-[#141514]'
+              }`}
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-        )}
-      </div>
 
-      {/* 3. Footer Utilities */}
-      <div
-        className={`p-2 border-t shrink-0 flex items-center justify-between gap-1 ${
-          isDarkTheme ? 'border-[#1f2129] bg-[#0c0d11]' : 'border-slate-200 bg-slate-50'
-        }`}
-      >
-        <button
-          onClick={onResetCamera}
-          title="Reset 3D View"
-          className={`p-2 rounded-lg border transition-colors ${
-            isDarkTheme
-              ? 'hover:bg-neutral-800 text-slate-400 hover:text-white border-[#262832]'
-              : 'hover:bg-slate-200 text-slate-600 border-slate-300'
-          }`}
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-        </button>
-
-        <button
-          onClick={onToggleTheme}
-          title={isDarkTheme ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-          className={`p-2 rounded-lg border transition-colors ${
-            isDarkTheme
-              ? 'hover:bg-neutral-800 text-slate-400 hover:text-white border-[#262832]'
-              : 'hover:bg-slate-200 text-slate-600 border-slate-300'
-          }`}
-        >
-          {isDarkTheme ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-slate-700" />}
-        </button>
-
-        <button
-          onClick={onOpenProvenance}
-          title="Model Provenance & Educational Disclaimer"
-          className={`p-2 rounded-lg border transition-colors ${
-            isDarkTheme
-              ? 'hover:bg-neutral-800 text-slate-400 hover:text-white border-[#262832]'
-              : 'hover:bg-slate-200 text-slate-600 border-slate-300'
-          }`}
-        >
-          <Info className="w-3.5 h-3.5 text-[#b08d46]" />
-        </button>
-
-        <button
-          onClick={onOpenXdcNetwork}
-          title="XDC Network JSON-RPC & Provenance Verification"
-          className={`p-2 rounded-lg border transition-colors ${
-            isDarkTheme
-              ? 'hover:bg-neutral-800 text-sky-400 hover:text-sky-300 border-[#262832]'
-              : 'hover:bg-slate-200 text-sky-700 border-slate-300'
-          }`}
-        >
-          <Blocks className="w-3.5 h-3.5" />
-        </button>
-
-        <button
-          onClick={onToggleXR}
-          title={
-            isXRSessionActive
-              ? 'VR Session Active — Manage or Exit VR'
-              : isXRSupported
-              ? 'Enter VR & Open WebXR Diagnostics'
-              : 'WebXR Fallback & Diagnostics'
-          }
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-2.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap shadow-xs border ${
-            isXRSessionActive
-              ? 'bg-rose-500 text-white border-rose-400 hover:bg-rose-400'
-              : isWebXRPanelOpen
-              ? 'bg-sky-400 text-black border-sky-300'
-              : 'text-black bg-[#e6b65c] border-[#d4a13f] hover:bg-[#f3ca76]'
-          }`}
-        >
-          <Glasses className="w-3.5 h-3.5" />
-          {!isCollapsed && <span>{isXRSessionActive ? 'VR Live' : isXRSupported ? 'Enter VR' : 'WebXR'}</span>}
-        </button>
-      </div>
-    </nav>
+          <AnatomicalScaleLauncher
+            currentScale={currentScale}
+            onSelectScale={onSelectScale}
+            isDarkTheme={isDarkTheme}
+            variant="popover"
+            onAfterSelect={() => setIsScaleLauncherOpen(false)}
+          />
+        </div>
+      )}
+    </>
   );
 };

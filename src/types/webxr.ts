@@ -49,8 +49,12 @@ export interface XRDiagnosticsState {
   protocol: string;
   hasNavigatorXR: boolean;
   isImmersiveVRSupported: boolean | null; // null = checking
+  isMixedRealitySupported: boolean;
+  runtimeMode: 'native' | 'iwer-quest3' | 'none';
+  isEmulatorActive: boolean;
   supportCheckError: string | null;
   sessionActive: boolean;
+  sessionMode: 'immersive-vr' | 'immersive-ar' | null;
   isPresenting: boolean;
   referenceSpaceType: 'local-floor' | 'local' | 'none';
   viewerTrackingState: XRTrackingState;
@@ -66,6 +70,11 @@ export interface XRDiagnosticsState {
   activeInteractionSource: InteractionSourceType | null;
   isManipulatingSpecimen: boolean;
   selectedTargetLabel: string | null;
+  ratkPlanesCount: number;
+  ratkMeshesCount: number;
+  vrZoomMultiplier: number;
+  locomotionPosition: [number, number, number];
+  locomotionTargetLabel: string | null;
   lastError: string | null;
   events: XREventLogEntry[];
 }

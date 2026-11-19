@@ -8,18 +8,20 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { LayerVisibility, ScaleLevel, ClotAnnotation, AnnotationScreenPosition, IndustrialCalloutPoint, ExplorerAnatomyId } from '../../types/biomedical.ts';
 import { DesktopInteractionMode, XRDiagnosticsState } from '../../types/webxr.ts';
 import { CLOT_ANNOTATIONS } from '../../data/clotAnnotations.ts';
-import { createThoracicOrganGroup, CLOT_PATH_SPLINE_POINTS } from '../procedural/thoracicGeometry.ts';
 import { createEmbolusMacroMesh, createVesselCutawayGroup, HemodynamicParticles } from '../procedural/vesselGeometry.ts';
 import { createIndustrialCutawayGroup, IndustrialCutawayGroup } from '../procedural/industrialCutaway.ts';
 import { MicroscopicChamber } from './MicroscopicChamber.ts';
 import { AnatomicalInteractionAdapter } from '../interaction/AnatomicalInteractionAdapter.ts';
 import { WebXRControllerRig } from '../xr/WebXRControllerRig.ts';
+import { AnatomicalHoverLabelInfo, SceneHoverLabelState, resolveHoverLabelInfo } from '../../data/anatomicalHoverLabels.ts';
 
 export interface SceneManagerCallbacks {
   onHoverObject?: (name: string | null) => void;
+  onHoverStructureLabel?: (label: SceneHoverLabelState | null) => void;
   onMeasurePoint?: (point: [number, number, number]) => void;
   onProgressChange?: (progress: number) => void;
   onScaleChange?: (scale: ScaleLevel) => void;
+  onZoomChange?: (zoom: number) => void;
   onSelectAnnotation?: (annotation: ClotAnnotation | null) => void;
   onSelectStructureFromScene?: (structureId: ExplorerAnatomyId) => void;
   onHoverAnnotation?: (annotation: ClotAnnotation | null) => void;
@@ -27,6 +29,7 @@ export interface SceneManagerCallbacks {
   onClotPathProgressChange?: (progress: number) => void;
   onXRDiagnosticsChange?: (diagnostics: XRDiagnosticsState) => void;
   onXRSessionStateChange?: (isPresenting: boolean) => void;
+  onWebGLContextChange?: (lost: boolean) => void;
 }
 
 export type SceneTheme = 'light' | 'dark';
@@ -40,22 +43,44 @@ export class SceneManager {
   public microscopicChamber: MicroscopicChamber;
   public vesselCutawayGroup: THREE.Group;
   public embolusMacroMesh: THREE.Mesh;
-  public thoracicGroup: THREE.Group;
+  public thoracicGroup: THREE.Group = new THREE.Group();
   public flowParticles: HemodynamicParticles;
   public industrialCutaway: IndustrialCutawayGroup;
-  public industrialMode: 'airway' | 'vascular' = 'airway';
+  public industrialMode: 'airway' | 'vascular' = 'vascular';
 
   // Scene container group for 180° upside-down rotation
   public sceneContainer = new THREE.Group();
+
+  // Immersive VR Player Rig (parents camera + XR controllers/hands/HUD for locomotion)
+  public vrPlayerRig = new THREE.Group();
 
   // Interactive tools
   public clippingPlane: THREE.Plane;
   private currentClipAxis: 'none' | 'x' | 'y' | 'z' = 'none';
 
-  // Camera targets for multi-scale navigation
-  private targetLookAt = new THREE.Vector3(0, 0, 0);
-  private currentLookAt = new THREE.Vector3(0, 0, 0);
-  private currentScale: ScaleLevel = 'microscopic';
+  // Camera targets & unified zoom multiplier [0.25x .. 5.0x]
+  private targetLookAt = new THREE.Vector3(2.0, 0, 0);
+  private currentLookAt = new THREE.Vector3(2.0, 0, 0);
+  private currentScale: ScaleLevel = 'vessel';
+  public targetZoomMultiplier = 1.0;
+  public currentZoomMultiplier = 1.0;
+  private activePinchDistance: number | null = null;
+
+  // VR Teleportation Locomotion state & reusable math helpers
+  private teleportRaycaster = new THREE.Raycaster();
+  private teleportStartPos = new THREE.Vector3();
+  private teleportTargetPos = new THREE.Vector3();
+  private teleportTransitionProgress = 1.0;
+  private locomotionCurrentLabel: string | null = null;
+  private tempTeleportPos = new THREE.Vector3();
+  private tempTeleportNext = new THREE.Vector3();
+  private tempTeleportVel = new THREE.Vector3();
+  private tempTeleportDir = new THREE.Vector3();
+  private tempFloorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  private tempFloorHit = new THREE.Vector3();
+  private tempHmdWorldPos = new THREE.Vector3();
+  private tempCameraOffset = new THREE.Vector3();
+  private tempParallaxOffset = new THREE.Vector3();
 
   // Continuous Hero Slider Progress [0.0 = deep microscopic, 1.0 = thoracic organ]
   private progress = 0.0;
@@ -88,9 +113,16 @@ export class SceneManager {
   // Shared Anatomical Interaction Adapter & WebXR Rig
   public interactionAdapter!: AnatomicalInteractionAdapter;
   public webXR!: WebXRControllerRig;
-  public desktopInteractionMode: DesktopInteractionMode = 'orbit';
+  private desktopInteractionMode: DesktopInteractionMode = 'orbit';
   private pointerSourceType: 'mouse' | 'touch' = 'mouse';
   private cleanupPointerListeners?: () => void;
+  private boundOnContextLost = (e: Event) => {
+    e.preventDefault();
+    this.callbacks.onWebGLContextChange?.(true);
+  };
+  private boundOnContextRestored = () => {
+    this.callbacks.onWebGLContextChange?.(false);
+  };
 
   // Annotations System
   public annotationsGroup = new THREE.Group();
@@ -131,6 +163,19 @@ export class SceneManager {
   public activeExplorerStructure: ExplorerAnatomyId | null = null;
   public structureHighlightBeacon: THREE.Group | null = null;
 
+  // Hoverable 3D Anatomical Label & Segment Highlight State
+  private hoveredLabelInfo: AnatomicalHoverLabelInfo | null = null;
+  private hoveredHighlightObject: THREE.Object3D | null = null;
+  private hoveredAnchorLocal = new THREE.Vector3();
+  private hoveredSavedEmissives: Array<{
+    material: THREE.MeshStandardMaterial;
+    emissiveHex: number;
+    emissiveIntensity: number;
+  }> = [];
+  private lastEmittedHoverKey = '';
+  private tempHoverWorld = new THREE.Vector3();
+  private tempHoverProj = new THREE.Vector3();
+
   constructor(container: HTMLDivElement, callbacks: SceneManagerCallbacks = {}) {
     this.container = container;
     this.callbacks = callbacks;
@@ -163,10 +208,14 @@ export class SceneManager {
 
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(this.renderer.domElement);
+    this.renderer.domElement.addEventListener('webglcontextlost', this.boundOnContextLost);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.boundOnContextRestored);
 
-    // 3. Scene & Camera setup
+    // 3. Scene, VR Player Rig & Camera setup
     this.scene = new THREE.Scene();
     this.scene.add(this.sceneContainer);
+    this.vrPlayerRig.name = 'VRPlayerLocomotionRig';
+    this.scene.add(this.vrPlayerRig);
 
     this.camera = new THREE.PerspectiveCamera(
       42, // Wide, cinematic 27-inch perspective
@@ -175,6 +224,7 @@ export class SceneManager {
       600
     );
     this.camera.position.set(0, 0, 13.5);
+    this.vrPlayerRig.add(this.camera);
 
     // 4. Studio Environment Lighting & Default Light Gray Background
     const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
@@ -210,21 +260,20 @@ export class SceneManager {
     this.sceneContainer.add(this.embolusMacroMesh);
 
     this.flowParticles = new HemodynamicParticles();
-    this.flowParticles.mesh.visible = false;
+    this.flowParticles.mesh.visible = true;
     this.sceneContainer.add(this.flowParticles.mesh);
 
-    this.thoracicGroup = createThoracicOrganGroup();
+    // Thoracic group intentionally kept empty and hidden — MVP focuses strictly on Artery, Thrombus & Fibrin
     this.thoracicGroup.visible = false;
-    this.sceneContainer.add(this.thoracicGroup);
-
-    // Initialize clot travel curve and traveling mesh
-    this.clotPathCurve = new THREE.CatmullRomCurve3(
-      CLOT_PATH_SPLINE_POINTS.map((p) => new THREE.Vector3(...p))
-    );
-    this.travelingClotMesh = this.thoracicGroup.getObjectByName('TravelingClotEmbolus') || null;
+    this.clotPathCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-4, 0, 0),
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(4, -1.2, 0),
+    ]);
+    this.travelingClotMesh = null;
     this.initStructureHighlightBeacon();
 
-    // Industrial CAD Cutaway scene rig (matching Sketch A)
+    // Isolated Vascular CAD Cutaway scene rig
     this.industrialCutaway = createIndustrialCutawayGroup({ mode: this.industrialMode });
     this.industrialCutaway.visible = false;
     this.sceneContainer.add(this.industrialCutaway);
@@ -272,6 +321,8 @@ export class SceneManager {
         }
       },
       onCycleScale: () => this.cycleExplorerScale(),
+      onZoomDelta: (factor) => this.setZoomMultiplier(this.targetZoomMultiplier * factor),
+      onStepInsideThoracic: () => this.teleportIntoThoracicAnatomy(),
       onResetScene: () => this.resetScene(),
       onExitVR: () => this.webXR.exitVR(),
     });
@@ -279,9 +330,17 @@ export class SceneManager {
     this.webXR = new WebXRControllerRig({
       renderer: this.renderer,
       scene: this.scene,
+      rigParent: this.vrPlayerRig,
       sceneContainer: this.sceneContainer,
       adapter: this.interactionAdapter,
       getCurrentScale: () => this.currentScale,
+      getZoomMultiplier: () => this.targetZoomMultiplier,
+      onZoomDelta: (factor) => this.setZoomMultiplier(this.targetZoomMultiplier * factor),
+      computeTeleportArc: (origin, dir) => this.computeVRTeleportArc(origin, dir),
+      onTeleportExecute: (point, kind, label) => this.teleportVRToWorldPoint(point, kind, label),
+      onSnapTurn: (angle) => this.rotateVRRigYaw(angle),
+      onResetLocomotion: () => this.resetVRLocomotion(),
+      getLocomotionState: () => this.getLocomotionState(),
       onDiagnosticsChange: (diag) => this.callbacks.onXRDiagnosticsChange?.(diag),
       onSessionStateChange: (presenting) => this.callbacks.onXRSessionStateChange?.(presenting),
     });
@@ -369,38 +428,16 @@ export class SceneManager {
   public highlightExplorerStructure(structureId: ExplorerAnatomyId, moveCamera = true): void {
     this.activeExplorerStructure = structureId;
 
-    // Switch scale to thoracic if not already there, so user sees full organ & vessel context
-    if (this.currentScale !== 'thoracic') {
-      this.setProgress(0.85);
-      this.callbacks.onProgressChange?.(0.85);
+    // MVP focuses strictly on Artery, Thrombus, and Fibrin
+    if (moveCamera && this.currentScale === 'industrialCutaway') {
+      this.setScale('vessel');
+      this.callbacks.onScaleChange?.('vessel');
+      this.callbacks.onProgressChange?.(this.progress);
     }
 
-    // Position camera smoothly according to anatomical area without intrusive overlay ring
-    switch (structureId) {
-      case 'deepVeins':
-        if (moveCamera) {
-          this.targetLookAt.set(-0.5, -14.0, 0.0);
-          this.spherical.set(28.0, Math.PI / 2.05, 0.1);
-        }
-        break;
-      case 'heart':
-        if (moveCamera) {
-          this.targetLookAt.set(1.5, -4.0, 1.5);
-          this.spherical.set(24.0, Math.PI / 2.1, 0.15);
-        }
-        break;
-      case 'pulmonaryArtery':
-        if (moveCamera) {
-          this.targetLookAt.set(-6.0, 1.0, 0.6);
-          this.spherical.set(22.0, Math.PI / 2.15, -0.2);
-        }
-        break;
-      case 'lungs':
-        if (moveCamera) {
-          this.targetLookAt.set(0.0, 0.0, 0.0);
-          this.spherical.set(38.0, Math.PI / 2.2, 0.0);
-        }
-        break;
+    if (moveCamera) {
+      this.targetLookAt.set(2.4, -0.6, 0.0);
+      this.spherical.set(28.0, Math.PI / 2.15, -0.15);
     }
   }
 
@@ -413,10 +450,6 @@ export class SceneManager {
   public playClotPathAnimation(): void {
     if (this.clotPathProgress >= 0.99) {
       this.clotPathProgress = 0.0;
-    }
-    if (this.currentScale !== 'thoracic') {
-      this.setProgress(0.85);
-      this.callbacks.onProgressChange?.(0.85);
     }
     this.isClotPathPlaying = true;
   }
@@ -450,24 +483,34 @@ export class SceneManager {
 
   public setTheme(theme: SceneTheme): void {
     this.currentTheme = theme;
+
+    // Keep transparent passthrough in immersive-ar or pitch-black backdrop in isolated CAD cutaway
+    const isARPassthrough =
+      this.renderer.xr.isPresenting && this.webXR?.getDiagnostics().sessionMode === 'immersive-ar';
+    if (isARPassthrough || this.currentScale === 'industrialCutaway') {
+      return;
+    }
+
     if (theme === 'light') {
-      // Light gray clinical laboratory environment (#ebedf2)
-      this.scene.background = new THREE.Color(0xebedf2);
-      this.scene.fog = new THREE.FogExp2(0xebedf2, 0.005);
+      // Warm editorial museum studio backdrop (#eeece2) harmonizing with #F5D547 & #141514 UI
+      this.scene.background = new THREE.Color(0xeeece2);
+      this.scene.fog = new THREE.FogExp2(0xeeece2, 0.0045);
+      this.renderer.setClearColor(0xeeece2, 1.0);
       this.renderer.toneMappingExposure = 1.08;
-      this.hemiLight.color.setHex(0xffffff);
-      this.hemiLight.groundColor.setHex(0xd0d5de);
+      this.hemiLight.color.setHex(0xfffdf5);
+      this.hemiLight.groundColor.setHex(0xd6d1c2);
       this.hemiLight.intensity = 1.5;
       this.keyLight.intensity = 2.4;
       this.rimLight.intensity = 1.8;
     } else {
-      // Dark technical obsidian (#080808)
-      this.scene.background = new THREE.Color(0x080808);
-      this.scene.fog = new THREE.FogExp2(0x080808, 0.007);
+      // Deep carbon charcoal (#0e0f0d)
+      this.scene.background = new THREE.Color(0x0e0f0d);
+      this.scene.fog = new THREE.FogExp2(0x0e0f0d, 0.0065);
+      this.renderer.setClearColor(0x0e0f0d, 1.0);
       this.renderer.toneMappingExposure = 1.15;
-      this.hemiLight.color.setHex(0x7da4d4);
-      this.hemiLight.groundColor.setHex(0x1b1b22);
-      this.hemiLight.intensity = 1.2;
+      this.hemiLight.color.setHex(0x88a4c8);
+      this.hemiLight.groundColor.setHex(0x1b1c19);
+      this.hemiLight.intensity = 1.25;
       this.keyLight.intensity = 2.6;
       this.rimLight.intensity = 2.2;
     }
@@ -482,12 +525,255 @@ export class SceneManager {
     this.desktopInteractionMode = mode;
   }
 
+  public setZoomMultiplier(zoom: number): void {
+    const clamped = Math.round(Math.max(0.25, Math.min(5.0, zoom)) * 100) / 100;
+    if (Math.abs(clamped - this.targetZoomMultiplier) < 0.001) return;
+    this.targetZoomMultiplier = clamped;
+    this.callbacks.onZoomChange?.(clamped);
+  }
+
+  public getZoomMultiplier(): number {
+    return this.targetZoomMultiplier;
+  }
+
+  public zoomIn(factor = 1.25): void {
+    this.setZoomMultiplier(this.targetZoomMultiplier * factor);
+  }
+
+  public zoomOut(factor = 1.25): void {
+    this.setZoomMultiplier(this.targetZoomMultiplier / factor);
+  }
+
+  public resetZoom(): void {
+    this.setZoomMultiplier(1.0);
+  }
+
+  /**
+   * Computes a ballistic teleportation arc for immersive VR locomotion across both
+   * thoracic/vascular anatomical geometry and the surrounding walkable floor plane.
+   */
+  public computeVRTeleportArc(
+    originWorld: THREE.Vector3,
+    directionWorld: THREE.Vector3
+  ): {
+    points: THREE.Vector3[];
+    hitPoint: THREE.Vector3 | null;
+    hitNormal: THREE.Vector3 | null;
+    hitLabel: string | null;
+    hitKind: 'anatomy' | 'floor' | 'none';
+    valid: boolean;
+  } {
+    const points: THREE.Vector3[] = [originWorld.clone()];
+    const speed = 6.2;
+    const gravity = -7.6;
+    const dt = 0.042;
+    const maxSteps = 28;
+
+    this.tempTeleportPos.copy(originWorld);
+    this.tempTeleportVel.copy(directionWorld).normalize().multiplyScalar(speed);
+
+    const floorY = Math.max(-1.4, this.sceneContainer.position.y - 1.05);
+    this.tempFloorPlane.set(new THREE.Vector3(0, 1, 0), -floorY);
+
+    const anatomyTargets: THREE.Object3D[] = [];
+    if (this.vesselCutawayGroup.visible) anatomyTargets.push(this.vesselCutawayGroup);
+    if (this.embolusMacroMesh.visible) anatomyTargets.push(this.embolusMacroMesh);
+    if (this.microscopicChamber.root.visible) anatomyTargets.push(this.microscopicChamber.root);
+    if (this.industrialCutaway.visible) anatomyTargets.push(this.industrialCutaway);
+
+    for (let step = 0; step < maxSteps; step++) {
+      this.tempTeleportVel.y += gravity * dt;
+      this.tempTeleportNext.copy(this.tempTeleportPos).addScaledVector(this.tempTeleportVel, dt);
+
+      this.tempTeleportDir.subVectors(this.tempTeleportNext, this.tempTeleportPos);
+      const segLen = this.tempTeleportDir.length();
+      if (segLen > 0.0001) {
+        this.tempTeleportDir.divideScalar(segLen);
+
+        // 1. Check arterial, thrombus & fibrin intersections along this parabolic segment
+        if (anatomyTargets.length > 0) {
+          this.teleportRaycaster.set(this.tempTeleportPos, this.tempTeleportDir);
+          this.teleportRaycaster.near = 0;
+          this.teleportRaycaster.far = segLen;
+
+          const hits = this.teleportRaycaster.intersectObjects(anatomyTargets, true);
+          const chosenHit = hits.find((h) => h.object.visible) || null;
+
+          if (chosenHit) {
+            const match = resolveHoverLabelInfo(chosenHit.object);
+            const hitNormal = chosenHit.face
+              ? chosenHit.face.normal
+                  .clone()
+                  .transformDirection(chosenHit.object.matrixWorld)
+                  .normalize()
+              : new THREE.Vector3(0, 1, 0);
+            points.push(chosenHit.point.clone());
+            return {
+              points,
+              hitPoint: chosenHit.point.clone(),
+              hitNormal,
+              hitLabel: match?.info.clinicalName || chosenHit.object.name || 'Arterial Lumen',
+              hitKind: 'anatomy',
+              valid: true,
+            };
+          }
+        }
+
+        // 2. Check intersection with walkable floor plane
+        if (this.tempTeleportPos.y >= floorY && this.tempTeleportNext.y <= floorY) {
+          const lineSeg = new THREE.Line3(this.tempTeleportPos, this.tempTeleportNext);
+          if (this.tempFloorPlane.intersectLine(lineSeg, this.tempFloorHit)) {
+            const dx = this.tempFloorHit.x - this.sceneContainer.position.x;
+            const dz = this.tempFloorHit.z - this.sceneContainer.position.z;
+            const distFromSpecimen = Math.hypot(dx, dz);
+            const valid = distFromSpecimen <= 7.5;
+            points.push(this.tempFloorHit.clone());
+            return {
+              points,
+              hitPoint: this.tempFloorHit.clone(),
+              hitNormal: new THREE.Vector3(0, 1, 0),
+              hitLabel: valid ? 'Vascular Inspection Floor' : null,
+              hitKind: valid ? 'floor' : 'none',
+              valid,
+            };
+          }
+        }
+      }
+
+      points.push(this.tempTeleportNext.clone());
+      this.tempTeleportPos.copy(this.tempTeleportNext);
+    }
+
+    return {
+      points,
+      hitPoint: null,
+      hitNormal: null,
+      hitLabel: null,
+      hitKind: 'none',
+      valid: false,
+    };
+  }
+
+  /**
+   * Executes a smooth comfort-interpolated VR teleport to a floor coordinate or
+   * directly into/onto a targeted thoracic anatomical structure.
+   */
+  public teleportVRToWorldPoint(
+    worldPoint: THREE.Vector3,
+    hitKind: 'anatomy' | 'floor',
+    hitLabel: string | null = null
+  ): void {
+    const xrCam = this.renderer.xr.isPresenting ? this.renderer.xr.getCamera() : this.camera;
+    xrCam.getWorldPosition(this.tempHmdWorldPos);
+    const hmdOffsetX = this.tempHmdWorldPos.x - this.vrPlayerRig.position.x;
+    const hmdOffsetY = Math.max(0.4, this.tempHmdWorldPos.y - this.vrPlayerRig.position.y);
+    const hmdOffsetZ = this.tempHmdWorldPos.z - this.vrPlayerRig.position.z;
+
+    let targetX = worldPoint.x - hmdOffsetX;
+    let targetZ = worldPoint.z - hmdOffsetZ;
+    let targetY = worldPoint.y;
+
+    if (hitKind === 'anatomy') {
+      // Elevate/align viewer head to the targeted vessel or pulmonary chamber for walkthrough inspection
+      targetY = worldPoint.y - hmdOffsetY;
+      if (this.targetZoomMultiplier < 2.0) {
+        this.setZoomMultiplier(2.25);
+      }
+    }
+
+    targetX = THREE.MathUtils.clamp(targetX, -7.5, 7.5);
+    targetY = THREE.MathUtils.clamp(targetY, -1.5, 4.5);
+    targetZ = THREE.MathUtils.clamp(targetZ, -7.5, 7.5);
+
+    this.teleportStartPos.copy(this.vrPlayerRig.position);
+    this.teleportTargetPos.set(targetX, targetY, targetZ);
+    this.teleportTransitionProgress = 0.0;
+    this.locomotionCurrentLabel = hitLabel || (hitKind === 'anatomy' ? 'Arterial & Thrombus Lumen' : 'Inspection Floor');
+  }
+
+  /**
+   * Quick-warp directly inside the Pulmonary Artery & Thrombus Lumen during VR/Desktop sessions.
+   */
+  public teleportIntoThoracicAnatomy(): void {
+    if (this.currentScale === 'industrialCutaway' || this.currentScale === 'thoracic') {
+      this.setScale('vessel');
+      this.callbacks.onScaleChange?.('vessel');
+      this.callbacks.onProgressChange?.(this.progress);
+    }
+
+    if (!this.renderer.xr.isPresenting) {
+      // On desktop, smoothly frame the impacted Thrombus inside the Artery Bifurcation
+      this.resetVRLocomotion();
+      this.targetLookAt.set(3.2, -1.1, -0.1);
+      this.spherical.set(16.0, Math.PI / 2.15, -0.22);
+      this.setZoomMultiplier(Math.max(this.targetZoomMultiplier, 2.0));
+      this.locomotionCurrentLabel = 'Artery & Thrombus Lumen';
+      this.webXR?.refreshSpatialLabel(true);
+      return;
+    }
+
+    this.setZoomMultiplier(Math.max(this.targetZoomMultiplier, 2.4));
+
+    const targetWorld = new THREE.Vector3(0, 0, 0);
+    if (this.embolusMacroMesh.visible) {
+      this.embolusMacroMesh.getWorldPosition(targetWorld);
+    } else {
+      targetWorld.copy(this.sceneContainer.position);
+    }
+    this.teleportVRToWorldPoint(targetWorld, 'anatomy', 'Artery & Thrombus Lumen');
+  }
+
+  /**
+   * Comfort snap-turn around the HMD's current world XZ position.
+   */
+  public rotateVRRigYaw(angleRadians: number): void {
+    const xrCam = this.renderer.xr.isPresenting ? this.renderer.xr.getCamera() : this.camera;
+    xrCam.getWorldPosition(this.tempHmdWorldPos);
+
+    const dx = this.vrPlayerRig.position.x - this.tempHmdWorldPos.x;
+    const dz = this.vrPlayerRig.position.z - this.tempHmdWorldPos.z;
+    const c = Math.cos(angleRadians);
+    const s = Math.sin(angleRadians);
+    const rotatedX = dx * c + dz * s;
+    const rotatedZ = -dx * s + dz * c;
+
+    this.vrPlayerRig.position.x = this.tempHmdWorldPos.x + rotatedX;
+    this.vrPlayerRig.position.z = this.tempHmdWorldPos.z + rotatedZ;
+    this.vrPlayerRig.rotateY(angleRadians);
+
+    this.teleportStartPos.copy(this.vrPlayerRig.position);
+    this.teleportTargetPos.copy(this.vrPlayerRig.position);
+    this.teleportTransitionProgress = 1.0;
+  }
+
+  public resetVRLocomotion(): void {
+    this.vrPlayerRig.position.set(0, 0, 0);
+    this.vrPlayerRig.rotation.set(0, 0, 0);
+    this.teleportStartPos.set(0, 0, 0);
+    this.teleportTargetPos.set(0, 0, 0);
+    this.teleportTransitionProgress = 1.0;
+    this.locomotionCurrentLabel = null;
+  }
+
+  public getLocomotionState(): { position: [number, number, number]; targetLabel: string | null } {
+    return {
+      position: [
+        Math.round(this.vrPlayerRig.position.x * 100) / 100,
+        Math.round(this.vrPlayerRig.position.y * 100) / 100,
+        Math.round(this.vrPlayerRig.position.z * 100) / 100,
+      ],
+      targetLabel: this.locomotionCurrentLabel,
+    };
+  }
+
   public resetScene(): void {
     this.isUpsideDown = false;
     this.targetFlipAngle = 0;
     this.currentFlipAngle = 0;
     this.sceneContainer.quaternion.identity();
     this.selectAnnotation(null);
+    this.resetZoom();
+    this.resetVRLocomotion();
 
     if (this.renderer.xr.isPresenting) {
       this.webXR.recenterSeatedSpecimen();
@@ -496,13 +782,19 @@ export class SceneManager {
 
     this.sceneContainer.position.set(0, 0, 0);
     this.sceneContainer.scale.set(1, 1, 1);
+
+    if (this.currentScale === 'industrialCutaway') {
+      this.snapIndustrialCamera('reference');
+      return;
+    }
+
     this.spherical.theta = 0;
     this.spherical.phi = Math.PI / 2.2;
     this.setProgress(this.progress);
   }
 
   public cycleExplorerScale(): void {
-    const order: ScaleLevel[] = ['thoracic', 'vessel', 'clot', 'microscopic'];
+    const order: ScaleLevel[] = ['vessel', 'clot', 'microscopic', 'industrialCutaway'];
     const idx = order.indexOf(this.currentScale);
     const next = order[(idx + 1) % order.length];
     this.setScale(next);
@@ -513,9 +805,156 @@ export class SceneManager {
     }
   }
 
+  private restoreHoveredEmissives(): void {
+    for (const saved of this.hoveredSavedEmissives) {
+      saved.material.emissive.setHex(saved.emissiveHex);
+      saved.material.emissiveIntensity = saved.emissiveIntensity;
+    }
+    this.hoveredSavedEmissives = [];
+  }
+
+  private clearHoveredStructureLabel(): void {
+    this.restoreHoveredEmissives();
+    this.hoveredLabelInfo = null;
+    this.hoveredHighlightObject = null;
+    if (this.lastEmittedHoverKey !== '') {
+      this.lastEmittedHoverKey = '';
+      this.callbacks.onHoverStructureLabel?.(null);
+      this.callbacks.onHoverObject?.(null);
+    }
+  }
+
+  private applyHoveredStructure(
+    info: AnatomicalHoverLabelInfo,
+    namedObject: THREE.Object3D,
+    hitObject: THREE.Object3D,
+    worldPoint: THREE.Vector3
+  ): void {
+    const targetObj: THREE.Object3D | null =
+      namedObject.name === 'EmbolusBeaconRing'
+        ? this.thoracicGroup.getObjectByName('ThoracicEmbolusSite') || null
+        : namedObject.name === 'MicroscopicChamberRoot'
+        ? hitObject
+        : namedObject;
+
+    if (targetObj !== this.hoveredHighlightObject || this.hoveredLabelInfo?.id !== info.id) {
+      this.restoreHoveredEmissives();
+      this.hoveredHighlightObject = targetObj;
+
+      if (targetObj) {
+        const highlightHex =
+          info.category === 'Thrombus & Embolus'
+            ? 0xf59e0b
+            : 0x38bdf8;
+        const highlightIntensity = info.isPulmonarySegment
+          ? 0.48
+          : info.category === 'Thrombus & Embolus'
+          ? 0.52
+          : 0.26;
+
+        const seenMaterials = new Set<THREE.Material>();
+        targetObj.traverse((child) => {
+          if (!(child instanceof THREE.Mesh)) return;
+          const mats = Array.isArray(child.material) ? child.material : [child.material];
+          for (const mat of mats) {
+            if (!(mat instanceof THREE.MeshStandardMaterial) || seenMaterials.has(mat)) continue;
+            seenMaterials.add(mat);
+            this.hoveredSavedEmissives.push({
+              material: mat,
+              emissiveHex: mat.emissive.getHex(),
+              emissiveIntensity: mat.emissiveIntensity,
+            });
+            mat.emissive.setHex(highlightHex);
+            mat.emissiveIntensity = Math.max(mat.emissiveIntensity, highlightIntensity);
+          }
+        });
+      }
+
+      this.callbacks.onHoverObject?.(info.clinicalName);
+    }
+
+    this.hoveredLabelInfo = info;
+    this.hoveredAnchorLocal.copy(worldPoint);
+    this.sceneContainer.worldToLocal(this.hoveredAnchorLocal);
+    this.emitProjectedHoverLabel();
+  }
+
+  private isObjectVisibleInHierarchy(obj: THREE.Object3D | null): boolean {
+    let curr: THREE.Object3D | null = obj;
+    while (curr) {
+      if (!curr.visible) return false;
+      curr = curr.parent;
+    }
+    return true;
+  }
+
+  private emitProjectedHoverLabel(): void {
+    if (!this.hoveredLabelInfo || this.renderer.xr.isPresenting) {
+      if (this.lastEmittedHoverKey !== '') {
+        this.clearHoveredStructureLabel();
+      }
+      return;
+    }
+
+    if (this.hoveredHighlightObject && !this.isObjectVisibleInHierarchy(this.hoveredHighlightObject)) {
+      this.clearHoveredStructureLabel();
+      return;
+    }
+
+    this.tempHoverWorld.copy(this.hoveredAnchorLocal);
+    this.sceneContainer.localToWorld(this.tempHoverWorld);
+    this.tempHoverProj.copy(this.tempHoverWorld).project(this.camera);
+
+    const rect = this.container.getBoundingClientRect();
+    const width = rect.width || this.container.clientWidth;
+    const height = rect.height || this.container.clientHeight;
+    if (width <= 0 || height <= 0) return;
+
+    const isInFront = this.tempHoverProj.z < 1.0;
+    const screenX = Math.round((this.tempHoverProj.x * 0.5 + 0.5) * width);
+    const screenY = Math.round((-this.tempHoverProj.y * 0.5 + 0.5) * height);
+    const visible =
+      isInFront &&
+      screenX >= 0 &&
+      screenX <= width &&
+      screenY >= 0 &&
+      screenY <= height;
+
+    const key = `${this.hoveredLabelInfo.id}|${visible ? 1 : 0}|${screenX}|${screenY}`;
+    if (key !== this.lastEmittedHoverKey) {
+      this.lastEmittedHoverKey = key;
+      this.callbacks.onHoverStructureLabel?.({
+        info: this.hoveredLabelInfo,
+        screenX,
+        screenY,
+        visible,
+      });
+    }
+  }
+
   private setupPointerControls(container: HTMLDivElement): void {
+    const getPinchDistance = (touches: TouchList): number => {
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    };
+
     const onDown = (e: MouseEvent | TouchEvent) => {
+      if (!('touches' in e) && e.button !== 0) {
+        return;
+      }
+      if ('touches' in e && e.touches.length === 2) {
+        this.activePinchDistance = getPinchDistance(e.touches);
+        this.isPointerDown = false;
+        this.clearHoveredStructureLabel();
+        return;
+      }
+      if ('touches' in e && e.touches.length === 0) {
+        return;
+      }
+      this.activePinchDistance = null;
       this.isPointerDown = true;
+      this.clearHoveredStructureLabel();
       this.pointerSourceType = 'touches' in e ? 'touch' : 'mouse';
       const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
       const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
@@ -526,6 +965,22 @@ export class SceneManager {
     };
 
     const onMove = (e: MouseEvent | TouchEvent) => {
+      if ('touches' in e && e.touches.length === 2) {
+        const nextDist = getPinchDistance(e.touches);
+        if (this.activePinchDistance && this.activePinchDistance > 0) {
+          const ratio = nextDist / this.activePinchDistance;
+          if (Math.abs(ratio - 1) > 0.005) {
+            this.setZoomMultiplier(this.targetZoomMultiplier * ratio);
+          }
+        }
+        this.activePinchDistance = nextDist;
+        return;
+      }
+
+      if ('touches' in e && e.touches.length === 0) {
+        return;
+      }
+
       const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
       const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
 
@@ -536,11 +991,42 @@ export class SceneManager {
 
       // Shared hover detection via AnatomicalInteractionAdapter
       if (!this.isPointerDown && !this.renderer.xr.isPresenting) {
+        const target = e.target as Node | null;
+        const overCanvas = target === container || target === this.renderer.domElement;
         const rect = container.getBoundingClientRect();
+        const insideCanvas =
+          clientX >= rect.left &&
+          clientX <= rect.right &&
+          clientY >= rect.top &&
+          clientY <= rect.bottom;
+
+        if (!overCanvas || !insideCanvas) {
+          this.clearHoveredStructureLabel();
+          return;
+        }
+
         this.mouseVec2.x = ((clientX - rect.left) / rect.width) * 2 - 1;
         this.mouseVec2.y = -((clientY - rect.top) / rect.height) * 2 + 1;
         const hoverRes = this.interactionAdapter.handleHoverRay(this.mouseVec2, this.camera);
-        container.style.cursor = hoverRes.kind === 'hotspot' ? 'pointer' : this.desktopInteractionMode === 'manipulate' ? 'move' : 'default';
+        const anatomicalHover = this.interactionAdapter.resolveAnatomicalHover(this.mouseVec2, this.camera);
+
+        if (anatomicalHover) {
+          this.applyHoveredStructure(
+            anatomicalHover.info,
+            anatomicalHover.namedObject,
+            anatomicalHover.hitObject,
+            anatomicalHover.point
+          );
+          container.style.cursor = 'pointer';
+        } else {
+          this.clearHoveredStructureLabel();
+          container.style.cursor =
+            hoverRes.kind === 'hotspot'
+              ? 'pointer'
+              : this.desktopInteractionMode === 'manipulate'
+              ? 'move'
+              : 'grab';
+        }
       }
 
       if (!this.isPointerDown) return;
@@ -564,9 +1050,16 @@ export class SceneManager {
     };
 
     const onUp = (e: MouseEvent | TouchEvent) => {
+      if ('touches' in e && e.touches.length < 2) {
+        this.activePinchDistance = null;
+      }
+      const wasPointerDown = this.isPointerDown;
       this.isPointerDown = false;
-      const clientX = 'changedTouches' in e ? e.changedTouches[0].clientX : (e as MouseEvent).clientX;
-      const clientY = 'changedTouches' in e ? e.changedTouches[0].clientY : (e as MouseEvent).clientY;
+      if (!wasPointerDown) return;
+
+      const touch = 'changedTouches' in e ? e.changedTouches[0] : undefined;
+      const clientX = touch ? touch.clientX : !('changedTouches' in e) ? (e as MouseEvent).clientX : undefined;
+      const clientY = touch ? touch.clientY : !('changedTouches' in e) ? (e as MouseEvent).clientY : undefined;
 
       if (clientX !== undefined && clientY !== undefined) {
         const dist = Math.hypot(clientX - this.pointerDownPos.x, clientY - this.pointerDownPos.y);
@@ -577,16 +1070,39 @@ export class SceneManager {
       }
     };
 
-    // Parallax scroll wheel: seamlessly zooms in/out all the way from micro to thoracic,
-    // OR performs isolated camera zoom inside the CAD cutaway model
+    const onLeave = () => {
+      this.clearHoveredStructureLabel();
+    };
+
+    // Scroll wheel & trackpad pinch-to-zoom:
+    // - Ctrl/Meta+Wheel (trackpad pinch) or CAD Cutaway adjusts optical zoom multiplier smoothly
+    // - Standard Wheel zooms continuously across scales, extending smoothly via zoomMultiplier at limits
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      this.clearHoveredStructureLabel();
+
+      if (e.ctrlKey || e.metaKey) {
+        const pinchFactor = Math.exp(-e.deltaY * 0.008);
+        this.setZoomMultiplier(this.targetZoomMultiplier * pinchFactor);
+        return;
+      }
+
       if (this.currentScale === 'industrialCutaway' || this.industrialCutaway.visible) {
         // Isolate zoom inside the CAD cutaway: adjust camera distance without changing scale
         const zoomDelta = Math.sign(e.deltaY) * Math.max(0.6, this.spherical.radius * 0.08);
         this.spherical.radius = Math.max(2.5, Math.min(45.0, this.spherical.radius + zoomDelta));
         return;
       }
+
+      if (e.deltaY > 0 && this.progress >= 0.995) {
+        this.zoomOut(1.1);
+        return;
+      }
+      if (e.deltaY < 0 && this.progress <= 0.005) {
+        this.zoomIn(1.1);
+        return;
+      }
+
       const delta = Math.sign(e.deltaY) * 0.035;
       const newProgress = Math.max(0, Math.min(1.0, this.progress + delta));
       this.setProgress(newProgress);
@@ -596,6 +1112,7 @@ export class SceneManager {
     };
 
     container.addEventListener('mousedown', onDown);
+    container.addEventListener('mouseleave', onLeave);
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     container.addEventListener('touchstart', onDown, { passive: true });
@@ -605,6 +1122,7 @@ export class SceneManager {
 
     this.cleanupPointerListeners = () => {
       container.removeEventListener('mousedown', onDown);
+      container.removeEventListener('mouseleave', onLeave);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       container.removeEventListener('touchstart', onDown);
@@ -622,11 +1140,10 @@ export class SceneManager {
   }
 
   /**
-   * Continuous Hero Slider Progress (0.0 to 1.0)
-   * 0.00 - 0.25: Microscopic Fibrin Network Chamber (50 µm) with deep micro zoom
-   * 0.25 - 0.50: Clot Architecture (4 mm)
-   * 0.50 - 0.75: Pulmonary Artery Cutaway (8 mm)
-   * 0.75 - 1.00: Whole Thoracic Organ Anatomy (30 cm)
+   * Continuous Scale Progress (0.0 to 1.0) — Locked MVP: Fibrin -> Thrombus -> Artery
+   * 0.00 - 0.34: Microscopic Fibrin Network Chamber (50 µm)
+   * 0.34 - 0.66: Impacted Thrombus Body (4 mm)
+   * 0.66 - 1.00: Pulmonary Artery Cutaway (8 mm)
    */
   public setProgress(p: number): void {
     if (this.currentScale === 'industrialCutaway') {
@@ -634,42 +1151,36 @@ export class SceneManager {
     }
     this.progress = Math.max(0, Math.min(1.0, p));
 
-    // Determine primary scale
+    // Determine primary scale (strictly Fibrin / Thrombus / Artery)
     let scale: ScaleLevel = 'microscopic';
-    if (this.progress > 0.72) scale = 'thoracic';
-    else if (this.progress > 0.48) scale = 'vessel';
-    else if (this.progress > 0.22) scale = 'clot';
+    if (this.progress > 0.64) scale = 'vessel';
+    else if (this.progress > 0.32) scale = 'clot';
 
     this.currentScale = scale;
 
-    // Visibility blending
-    this.microscopicChamber.root.visible = this.progress < 0.38;
-    this.vesselCutawayGroup.visible = this.progress >= 0.18 && this.progress < 0.78;
-    this.embolusMacroMesh.visible = this.progress >= 0.18 && this.progress < 0.78;
-    this.flowParticles.mesh.visible = this.progress >= 0.18 && this.progress < 0.78;
-    this.thoracicGroup.visible = this.progress >= 0.65;
+    // Visibility blending — thoracic group always hidden
+    this.thoracicGroup.visible = false;
+    this.microscopicChamber.root.visible = this.progress < 0.42;
+    this.vesselCutawayGroup.visible = this.progress >= 0.24;
+    this.embolusMacroMesh.visible = this.progress >= 0.24;
+    this.flowParticles.mesh.visible = this.progress >= 0.24;
 
-    // Continuous camera distance interpolation across scales
-    if (this.progress <= 0.25) {
-      // Microscopic zoom range: from extreme close-up (r = 4.2) to room (r = 15.5)
-      const t = this.progress / 0.25;
-      this.spherical.radius = THREE.MathUtils.lerp(4.5, 15.5, t);
+    // Continuous camera distance interpolation across Fibrin -> Thrombus -> Artery
+    if (this.progress <= 0.34) {
+      // Fibrin chamber zoom range
+      const t = this.progress / 0.34;
+      this.spherical.radius = THREE.MathUtils.lerp(4.6, 15.0, t);
       this.targetLookAt.set(0, 0, 0);
-    } else if (this.progress <= 0.50) {
-      // Clot view: transition from micro to vessel clot
-      const t = (this.progress - 0.25) / 0.25;
-      this.spherical.radius = THREE.MathUtils.lerp(15.5, 24.0, t);
+    } else if (this.progress <= 0.66) {
+      // Thrombus close-up inside lumen
+      const t = (this.progress - 0.34) / 0.32;
+      this.spherical.radius = THREE.MathUtils.lerp(15.0, 22.5, t);
       this.targetLookAt.lerpVectors(new THREE.Vector3(0, 0, 0), new THREE.Vector3(3.5, -1.3, -0.2), t);
-    } else if (this.progress <= 0.75) {
-      // Artery cutaway: pull back to view whole vessel bifurcation
-      const t = (this.progress - 0.50) / 0.25;
-      this.spherical.radius = THREE.MathUtils.lerp(24.0, 38.0, t);
-      this.targetLookAt.lerpVectors(new THREE.Vector3(3.5, -1.3, -0.2), new THREE.Vector3(2.0, 0, 0), t);
     } else {
-      // Thoracic view: zoom out to see whole lungs & mediastinum
-      const t = (this.progress - 0.75) / 0.25;
-      this.spherical.radius = THREE.MathUtils.lerp(38.0, 78.0, t);
-      this.targetLookAt.lerpVectors(new THREE.Vector3(2.0, 0, 0), new THREE.Vector3(0, 2.0, 0), t);
+      // Pulmonary artery bifurcation cutaway overview
+      const t = (this.progress - 0.66) / 0.34;
+      this.spherical.radius = THREE.MathUtils.lerp(22.5, 36.0, t);
+      this.targetLookAt.lerpVectors(new THREE.Vector3(3.5, -1.3, -0.2), new THREE.Vector3(2.0, 0, 0), t);
     }
   }
 
@@ -678,7 +1189,11 @@ export class SceneManager {
   }
 
   public setScale(scale: ScaleLevel): void {
-    if (scale === 'industrialCutaway') {
+    this.clearHoveredStructureLabel();
+    // Redirect any legacy thoracic call straight to Pulmonary Artery Cutaway
+    const effectiveScale: ScaleLevel = scale === 'thoracic' ? 'vessel' : scale;
+
+    if (effectiveScale === 'industrialCutaway') {
       this.currentScale = 'industrialCutaway';
       this.microscopicChamber.root.visible = false;
       this.vesselCutawayGroup.visible = false;
@@ -693,33 +1208,41 @@ export class SceneManager {
       this.scene.fog = null;
       this.renderer.setClearColor(0x000000, 1.0);
 
-      // Camera angle matching Sketch A
+      // Camera angle matching cutaway framing
       this.spherical.radius = 16.5;
       this.spherical.phi = 1.05;
       this.spherical.theta = 0.72;
       this.targetLookAt.set(0, 0, 0);
+      if (this.renderer.xr.isPresenting) {
+        this.webXR.recenterSeatedSpecimen();
+      }
       return;
     }
 
-    // Leaving industrial cutaway, hide it and restore theme
-    if (this.industrialCutaway.visible) {
+    // Leaving industrial cutaway: restore visibility & active theme cleanly
+    const wasCutaway = this.currentScale === 'industrialCutaway' || this.industrialCutaway.visible;
+    if (wasCutaway) {
+      this.currentScale = effectiveScale;
       this.industrialCutaway.visible = false;
+      this.annotationsGroup.visible = this.layersVisibility.annotations;
       this.setTheme(this.currentTheme);
     }
 
-    switch (scale) {
+    switch (effectiveScale) {
       case 'microscopic':
-        this.setProgress(0.08);
+        this.setProgress(0.14);
         break;
       case 'clot':
-        this.setProgress(0.35);
+        this.setProgress(0.50);
         break;
       case 'vessel':
-        this.setProgress(0.62);
+      default:
+        this.setProgress(0.88);
         break;
-      case 'thoracic':
-        this.setProgress(0.92);
-        break;
+    }
+
+    if (this.renderer.xr.isPresenting) {
+      this.webXR.recenterSeatedSpecimen();
     }
   }
 
@@ -935,6 +1458,14 @@ export class SceneManager {
     const delta = Math.min(this.clock.getDelta(), 0.1);
     const isPresenting = this.renderer.xr.isPresenting;
 
+    // Smooth optical zoom damping shared across desktop and VR
+    this.currentZoomMultiplier = THREE.MathUtils.damp(
+      this.currentZoomMultiplier,
+      this.targetZoomMultiplier,
+      10.0,
+      delta
+    );
+
     if (!isPresenting) {
       // Desktop mode: smooth upside-down rotation transition (only when user triggered flip in desktop)
       this.currentFlipAngle = THREE.MathUtils.damp(
@@ -950,21 +1481,46 @@ export class SceneManager {
       // Smooth mouse parallax damping
       this.mouseParallaxCurrent.lerp(this.mouseParallaxTarget, 1 - Math.exp(-5 * delta));
 
-      // Smooth camera damping towards target spherical coordinates with parallax offset
-      const offset = new THREE.Vector3().setFromSpherical(this.spherical);
+      // Smooth camera damping towards target spherical coordinates with optical zoom & parallax offset
+      const effectiveRadius = THREE.MathUtils.clamp(
+        this.spherical.radius / Math.max(0.25, this.currentZoomMultiplier),
+        1.2,
+        140
+      );
+      this.tempCameraOffset.setFromSphericalCoords(
+        effectiveRadius,
+        this.spherical.phi,
+        this.spherical.theta
+      );
       this.currentLookAt.lerp(this.targetLookAt, 1 - Math.exp(-6 * delta));
 
       // Apply parallax translation to camera position
-      const parallaxOffset = new THREE.Vector3(
-        this.mouseParallaxCurrent.x * (this.spherical.radius * 0.05),
-        this.mouseParallaxCurrent.y * (this.spherical.radius * 0.05),
+      this.tempParallaxOffset.set(
+        this.mouseParallaxCurrent.x * (effectiveRadius * 0.045),
+        this.mouseParallaxCurrent.y * (effectiveRadius * 0.045),
         0
       );
 
-      this.camera.position.copy(this.currentLookAt).add(offset).add(parallaxOffset);
+      this.camera.position.copy(this.currentLookAt).add(this.tempCameraOffset).add(this.tempParallaxOffset);
       this.camera.lookAt(this.currentLookAt);
+
+      if (this.hoveredLabelInfo) {
+        this.emitProjectedHoverLabel();
+      }
     } else {
-      // WebXR presenting: let HMD drive camera; update hands, controllers, rays, manipulation & diagnostics
+      // Advance smooth VR teleportation transition before updating controller/hand world matrices
+      if (this.teleportTransitionProgress < 1.0) {
+        this.teleportTransitionProgress = Math.min(1.0, this.teleportTransitionProgress + delta * 7.5);
+        const eased = 1 - Math.pow(1 - this.teleportTransitionProgress, 3);
+        this.vrPlayerRig.position.lerpVectors(
+          this.teleportStartPos,
+          this.teleportTargetPos,
+          eased
+        );
+        this.vrPlayerRig.updateMatrixWorld(true);
+      }
+
+      // WebXR presenting: let HMD drive camera inside vrPlayerRig; update hands, controllers, rays, teleportation & diagnostics
       this.webXR.updateFrame(delta);
     }
 
@@ -1001,8 +1557,10 @@ export class SceneManager {
     }
 
     // Animate 3D Clot Annotation Hotspots & project to screen-space coordinates (desktop)
-    if (this.layersVisibility.annotations) {
-      const cameraPos = isPresenting ? this.renderer.xr.getCamera().position : this.camera.position;
+    if (this.layersVisibility.annotations && this.currentScale !== 'industrialCutaway') {
+      const cameraPos = isPresenting
+        ? this.renderer.xr.getCamera().getWorldPosition(this.tempHmdWorldPos)
+        : this.camera.position;
       const time = this.clock.getElapsedTime();
       const width = this.container.clientWidth;
       const height = this.container.clientHeight;
@@ -1014,12 +1572,12 @@ export class SceneManager {
         const group = this.hotspotMeshes.get(ann.id);
         if (!group) continue;
 
-        // Scale visibility
+        // Scale visibility strictly across Fibrin (microscopic) and Artery/Thrombus (vessel/clot)
         let isScaleVisible = false;
         if (ann.scale === 'microscopic') {
-          isScaleVisible = this.progress < 0.38;
+          isScaleVisible = this.progress < 0.42;
         } else if (ann.scale === 'clot' || ann.scale === 'vessel') {
-          isScaleVisible = this.progress >= 0.18 && this.progress < 0.78;
+          isScaleVisible = this.progress >= 0.24;
         } else {
           isScaleVisible = true;
         }
@@ -1077,9 +1635,19 @@ export class SceneManager {
   }
 
   public dispose(): void {
+    this.clearHoveredStructureLabel();
+    this.renderer.domElement.removeEventListener('webglcontextlost', this.boundOnContextLost);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.boundOnContextRestored);
     this.renderer.setAnimationLoop(null);
     this.cleanupPointerListeners?.();
     this.webXR.dispose();
+    if (this.scene.environment) {
+      this.scene.environment.dispose();
+      this.scene.environment = null;
+    }
     this.renderer.dispose();
+    if (this.renderer.domElement.parentElement) {
+      this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
+    }
   }
 }

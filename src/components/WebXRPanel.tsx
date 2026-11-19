@@ -3,11 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Glasses,
   X,
-  ShieldCheck,
   ShieldAlert,
   Hand,
   Gamepad2,
@@ -18,7 +17,13 @@ import {
   MousePointerClick,
   AlertTriangle,
   CheckCircle2,
-  Radio,
+  ZoomIn,
+  ZoomOut,
+  Navigation,
+  Cpu,
+  Layers,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { DesktopInteractionMode, XRDiagnosticsState } from '../types/webxr.ts';
 
@@ -28,13 +33,22 @@ interface WebXRPanelProps {
   diagnostics: XRDiagnosticsState | null;
   desktopInteractionMode: DesktopInteractionMode;
   onDesktopModeChange: (mode: DesktopInteractionMode) => void;
+  zoomMultiplier: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onResetZoom: () => void;
   onEnterVR: () => void;
+  onEnterMR: () => void;
   onExitVR: () => void;
+  onToggleQuestEmulator: () => void;
+  onTeleportIntoThorax: () => void;
+  onResetLocomotion: () => void;
   onResetScene: () => void;
   onRecenterSeated: () => void;
   onRefreshSupport: () => void;
   mountVRButton: (el: HTMLElement) => (() => void) | undefined;
   isDarkTheme: boolean;
+  isSidebarCollapsed?: boolean;
 }
 
 export const WebXRPanel: React.FC<WebXRPanelProps> = ({
@@ -43,88 +57,166 @@ export const WebXRPanel: React.FC<WebXRPanelProps> = ({
   diagnostics,
   desktopInteractionMode,
   onDesktopModeChange,
+  zoomMultiplier,
+  onZoomIn,
+  onZoomOut,
+  onResetZoom,
   onEnterVR,
+  onEnterMR,
   onExitVR,
+  onToggleQuestEmulator,
+  onTeleportIntoThorax,
+  onResetLocomotion,
   onResetScene,
   onRecenterSeated,
   onRefreshSupport,
   mountVRButton,
   isDarkTheme,
+  isSidebarCollapsed = false,
 }) => {
   const vrButtonContainerRef = useRef<HTMLDivElement>(null);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
+  const isEmulatorActive = diagnostics?.isEmulatorActive === true;
+  const runtimeMode = diagnostics?.runtimeMode ?? 'none';
+
+  // Re-mount Three.js VRButton whenever emulator or WebXR runtime mode changes so button updates live
   useEffect(() => {
     if (!isOpen || !vrButtonContainerRef.current) return;
     const cleanup = mountVRButton(vrButtonContainerRef.current);
     return () => {
       cleanup?.();
     };
-  }, [isOpen, mountVRButton]);
+  }, [isOpen, mountVRButton, isEmulatorActive, runtimeMode]);
+
+  const isPresenting = diagnostics?.isPresenting === true;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isPresenting) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, isPresenting, onClose]);
 
   if (!isOpen) return null;
 
   const isSupported = diagnostics?.isImmersiveVRSupported === true;
-  const isPresenting = diagnostics?.isPresenting === true;
+  const isMRSupported = diagnostics?.isMixedRealitySupported === true;
   const isSecure = diagnostics?.isSecureContext ?? false;
 
-  const badgeTone = (status: string | boolean | null | undefined) => {
-    if (status === true || status === 'active' || status === 'available' || status === 'tracked') {
-      return isDarkTheme
-        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-        : 'bg-emerald-50 text-emerald-800 border-emerald-300';
+  const statusTextColor = (status: string | boolean | null | undefined) => {
+    if (
+      status === true ||
+      status === 'active' ||
+      status === 'available' ||
+      status === 'tracked' ||
+      status === 'native' ||
+      status === 'iwer-quest3'
+    ) {
+      return isDarkTheme ? 'text-[#86EFAC]' : 'text-[#15803D]';
     }
     if (status === 'awaiting-input' || status === 'emulated' || status === null) {
-      return isDarkTheme
-        ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-        : 'bg-amber-50 text-amber-800 border-amber-300';
+      return isDarkTheme ? 'text-[#F5D547]' : 'text-[#9A6700]';
     }
-    return isDarkTheme
-      ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
-      : 'bg-rose-50 text-rose-800 border-rose-300';
+    return isDarkTheme ? 'text-[#FDA4AF]' : 'text-[#B91C1C]';
   };
+
+  const formatStatusLabel = (status: string | boolean | null | undefined) => {
+    if (status === true) return '● Ready';
+    if (status === false) return '✕ Off';
+    if (status === 'iwer-quest3') return '● Quest 3 Sim';
+    if (status === 'native') return '● Native XR';
+    if (status === 'active' || status === 'tracked') return '● Active';
+    if (status === 'available') return '● Available';
+    if (status === 'emulated') return '▲ Emulated';
+    if (status === 'awaiting-input') return '▲ Waiting';
+    if (status === 'unsupported') return '✕ Unsupported';
+    if (status === 'unavailable') return '✕ Unavailable';
+    return '— Unknown';
+  };
+
+  const locoPos = diagnostics?.locomotionPosition ?? [0, 0, 0];
+  const mutedText = isDarkTheme ? 'text-[#B7B5AA]' : 'text-[#4E5049]';
+  const dividerClass = isDarkTheme ? 'border-[#2C2E28]' : 'border-[#141514]/15';
+  const secondaryBtn = isDarkTheme
+    ? 'bg-[#1B1C19] border-[#32342D] text-[#FAF7EC] hover:bg-[#252721]'
+    : 'bg-[#FAF7EC] border-[#141514]/30 text-[#141514] hover:bg-[#F2EDE0]';
 
   return (
     <aside
-      className={`fixed top-3 bottom-3 left-[268px] z-40 w-[420px] max-w-[calc(100vw-280px)] rounded-2xl border shadow-2xl backdrop-blur-xl flex flex-col overflow-hidden transition-colors ${
+      role="dialog"
+      aria-label="WebAR, Meta Quest XR and Locomotion"
+      className={`fixed top-3 bottom-3 left-3 right-3 md:right-auto md:w-[408px] z-40 rounded-xl border shadow-2xl flex flex-col overflow-hidden transition-all duration-200 ${
+        isSidebarCollapsed ? 'md:left-[84px]' : 'md:left-[292px]'
+      } ${
         isDarkTheme
-          ? 'bg-[#0b0c10]/95 border-[#252730] text-slate-100 shadow-black/80'
-          : 'bg-white/95 border-slate-300 text-slate-900 shadow-slate-400/30'
+          ? 'bg-[#141513] border-[#31332D] text-[#FAF7EC] shadow-black/80'
+          : 'bg-[#FAF7EC] border-[#141514] text-[#141514] shadow-black/15'
       }`}
     >
-      {/* Header */}
+      {/* Editorial Header Band */}
       <div
-        className={`px-4 py-3.5 border-b flex items-center justify-between shrink-0 ${
-          isDarkTheme ? 'border-[#1e2028] bg-[#101117]' : 'border-slate-200 bg-slate-50'
+        className={`px-5 py-3.5 border-b flex items-center justify-between shrink-0 ${
+          isDarkTheme
+            ? 'border-[#2C2E28] bg-[#1A1B18]'
+            : 'border-[#141514]/25 bg-[#F5D547]'
         }`}
       >
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="p-2 rounded-lg bg-[#e6b65c]/15 border border-[#e6b65c]/40 text-[#e6b65c]">
-            <Glasses className="w-4 h-4" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-sm font-bold tracking-wide uppercase truncate">
-              WebXR Spatial & Diagnostics
-            </h2>
-            <p className="text-xs font-mono text-slate-400 truncate">
-              Seated VR · Hand Tracking · Controller Fallback
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onRefreshSupport}
-            title="Re-run WebXR Feature Detection"
-            className={`p-1.5 rounded-lg transition-colors ${
-              isDarkTheme ? 'hover:bg-neutral-800 text-slate-400 hover:text-white' : 'hover:bg-slate-200 text-slate-600'
+        <div className="min-w-0">
+          <div
+            className={`text-[9px] font-bold tracking-[0.2em] uppercase ${
+              isDarkTheme ? 'text-[#F5D547]' : 'text-[#141514]/80'
             }`}
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            SPATIAL &amp; IMMERSIVE
+          </div>
+          <h2 className="font-display text-lg font-bold tracking-tight truncate leading-tight mt-0.5">
+            WebXR &amp; <em className="italic font-semibold">Meta Quest</em>
+          </h2>
+          <div
+            className={`flex items-center gap-2 text-xs mt-0.5 ${
+              isDarkTheme ? 'text-[#B7B5AA]' : 'text-[#141514]/80'
+            }`}
+          >
+            <span className="font-medium">
+              {isPresenting
+                ? diagnostics?.sessionMode === 'immersive-ar'
+                  ? '● Mixed Reality Active'
+                  : '● Immersive VR Active'
+                : '○ Standby'}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span className="font-mono">{isEmulatorActive ? 'Quest 3 Sim' : 'WebXR'}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={onRefreshSupport}
+            title="Refresh WebXR Support"
+            aria-label="Refresh WebXR Support"
+            className={`w-10 h-10 inline-flex items-center justify-center rounded-lg border transition-colors ${
+              isDarkTheme
+                ? 'border-[#31332D] hover:bg-[#252721] text-[#FAF7EC]'
+                : 'border-[#141514]/25 hover:bg-[#141514]/10 text-[#141514]'
+            }`}
+          >
+            <RefreshCw className="w-4 h-4" />
           </button>
           <button
+            type="button"
             onClick={onClose}
-            title="Close WebXR Panel"
-            className={`p-1.5 rounded-lg transition-colors ${
-              isDarkTheme ? 'hover:bg-neutral-800 text-slate-400 hover:text-white' : 'hover:bg-slate-200 text-slate-600'
+            title="Close Panel (Esc)"
+            aria-label="Close WebXR Panel"
+            className={`w-10 h-10 inline-flex items-center justify-center rounded-lg border transition-colors ${
+              isDarkTheme
+                ? 'border-[#31332D] hover:bg-[#252721] text-[#FAF7EC]'
+                : 'border-[#141514]/25 hover:bg-[#141514]/10 text-[#141514]'
             }`}
           >
             <X className="w-4 h-4" />
@@ -132,319 +224,380 @@ export const WebXRPanel: React.FC<WebXRPanelProps> = ({
         </div>
       </div>
 
-      {/* Scrollable Content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
-        {/* 1. Graceful Fallback / HTTPS Notice */}
-        {!isSecure ? (
-          <div
-            className={`p-3.5 rounded-xl border flex gap-2.5 items-start ${
-              isDarkTheme
-                ? 'bg-rose-950/40 border-rose-500/40 text-rose-200'
-                : 'bg-rose-50 border-rose-300 text-rose-900'
-            }`}
-          >
-            <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <div className="font-bold text-sm">HTTPS Required for WebXR</div>
-              <p className="text-xs leading-relaxed opacity-90">
-                Current protocol is <span className="font-mono">{diagnostics?.protocol}</span>. Desktop 3D remains active,
-                but browsers disable <span className="font-mono">navigator.xr</span> outside HTTPS or{' '}
-                <span className="font-mono">localhost</span>. Deploy over HTTPS or use an HTTPS tunnel for physical headset testing.
-              </p>
-            </div>
-          </div>
-        ) : !isSupported ? (
-          <div
-            className={`p-3.5 rounded-xl border flex gap-2.5 items-start ${
-              isDarkTheme
-                ? 'bg-amber-950/30 border-amber-500/30 text-amber-200'
-                : 'bg-amber-50 border-amber-300 text-amber-900'
-            }`}
-          >
-            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <div className="font-bold text-sm">Graceful Desktop Fallback Active</div>
-              <p className="text-xs leading-relaxed opacity-90">
-                {diagnostics?.supportCheckError ||
-                  'No active immersive-vr headset or WebXR emulator detected in this browser. All desktop 3D anatomy controls and shared interaction adapter tools remain fully operational.'}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div
-            className={`p-3 rounded-xl border flex gap-2 items-center ${
-              isDarkTheme
-                ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-200'
-                : 'bg-emerald-50 border-emerald-300 text-emerald-900'
-            }`}
-          >
-            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-            <span className="text-sm font-medium">
-              WebXR <span className="font-mono">immersive-vr</span> runtime detected and ready.
-            </span>
-          </div>
-        )}
-
-        {/* 2. Primary VR Session Controls (Three.js VRButton + Direct Controls) */}
-        <div
-          className={`p-3.5 rounded-xl border space-y-3 ${
-            isDarkTheme ? 'bg-[#12141b] border-[#232633]' : 'bg-slate-50 border-slate-200'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-mono uppercase tracking-wider text-slate-400">
-              VR Session Controls
-            </span>
-            <span
-              className={`px-2 py-0.5 rounded border text-xs font-mono ${badgeTone(isPresenting)}`}
+      {/* Clean Hairline-Separated Sections (Single Elevation) */}
+      <div
+        className={`flex-1 overflow-y-auto divide-y ${
+          isDarkTheme ? 'divide-[#2C2E28]' : 'divide-[#141514]/15'
+        }`}
+      >
+        {/* 1. Runtime Readiness & Session Launch */}
+        <section className="p-5 space-y-3.5">
+          {!isSecure && !isEmulatorActive ? (
+            <div
+              className={`p-3 rounded-lg border flex gap-2.5 items-start ${
+                isDarkTheme
+                  ? 'bg-[#2A1515] border-[#7F1D1D] text-[#FECACA]'
+                  : 'bg-[#FEF2F2] border-[#141514] text-[#7F1D1D]'
+              }`}
             >
-              {isPresenting ? 'SESSION ACTIVE' : 'STANDBY'}
+              <ShieldAlert className="w-4 h-4 text-[#DC2626] shrink-0 mt-0.5" />
+              <p className="text-xs leading-relaxed">
+                Physical headsets require HTTPS. Enable the Meta Quest 3 Simulator below to preview VR locomotion on desktop.
+              </p>
+            </div>
+          ) : !isSupported ? (
+            <div
+              className={`p-3 rounded-lg border flex gap-2.5 items-start ${
+                isDarkTheme
+                  ? 'bg-[#222015] border-[#F5D547]/40 text-[#FAF7EC]'
+                  : 'bg-[#F2EDE0] border-[#141514]/30 text-[#141514]'
+              }`}
+            >
+              <AlertTriangle className="w-4 h-4 text-[#B45309] dark:text-[#F5D547] shrink-0 mt-0.5" />
+              <p className="text-xs leading-relaxed">
+                No physical headset detected. Turn on the Quest 3 Simulator to test VR teleportation, hand tracking, and Mixed Reality.
+              </p>
+            </div>
+          ) : (
+            <div
+              className={`flex items-center gap-2 text-xs font-semibold ${
+                isDarkTheme ? 'text-[#86EFAC]' : 'text-[#15803D]'
+              }`}
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>
+                {isEmulatorActive
+                  ? 'Meta Quest 3 Simulator ready for VR, AR & Hand Tracking'
+                  : 'Headset WebXR runtime detected and ready'}
+              </span>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={onToggleQuestEmulator}
+            className={`w-full min-h-[42px] px-4 py-2 rounded-lg text-xs font-bold tracking-[0.04em] border transition-colors flex items-center justify-center gap-2 ${
+              isEmulatorActive
+                ? isDarkTheme
+                  ? 'bg-[#F5D547] border-[#F5D547] text-[#141514] hover:bg-[#EBC834]'
+                  : 'bg-[#141514] border-[#141514] text-[#F5D547] hover:bg-[#2A2B28]'
+                : secondaryBtn
+            }`}
+          >
+            <Cpu className="w-4 h-4 shrink-0" />
+            <span>
+              {isEmulatorActive ? 'Disable Quest 3 Simulator' : 'Enable Meta Quest 3 Simulator'}
             </span>
-          </div>
+          </button>
 
           {/* Official Three.js VRButton mount slot */}
           <div ref={vrButtonContainerRef} className="w-full" />
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2.5">
             <button
+              type="button"
               onClick={isPresenting ? onExitVR : onEnterVR}
               disabled={!isSupported && !isPresenting}
-              className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-all flex items-center justify-center gap-1.5 ${
+              className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold tracking-[0.04em] border transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
                 isPresenting
-                  ? 'bg-rose-500/20 border-rose-500/40 text-rose-300 hover:bg-rose-500/30'
+                  ? 'bg-[#C82828] border-[#141514] text-white hover:bg-[#B22222]'
                   : isSupported
-                  ? isDarkTheme
-                    ? 'bg-sky-500/15 border-sky-500/40 text-sky-300 hover:bg-sky-500/25'
-                    : 'bg-sky-50 border-sky-300 text-sky-800 hover:bg-sky-100'
-                  : 'opacity-45 cursor-not-allowed bg-slate-800/30 border-slate-700/40 text-slate-400'
+                  ? 'bg-[#F5D547] border-[#141514] text-[#141514] hover:bg-[#EBC834]'
+                  : 'opacity-40 cursor-not-allowed border-current/25'
               }`}
             >
-              <Glasses className="w-4 h-4" />
-              <span>{isPresenting ? 'Exit VR' : 'Launch Session'}</span>
+              <Glasses className="w-4 h-4 shrink-0" />
+              <span>{isPresenting ? 'Exit Session' : 'Launch VR'}</span>
             </button>
 
             <button
-              onClick={onResetScene}
-              className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-all flex items-center justify-center gap-1.5 ${
-                isDarkTheme
-                  ? 'bg-[#181a24] border-[#2c3040] text-slate-200 hover:bg-[#222533]'
-                  : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100'
+              type="button"
+              onClick={onEnterMR}
+              disabled={(!isMRSupported && !isEmulatorActive) || isPresenting}
+              className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-semibold border transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                (isMRSupported || isEmulatorActive) && !isPresenting
+                  ? secondaryBtn
+                  : 'opacity-40 cursor-not-allowed border-current/25'
               }`}
             >
-              <RotateCcw className="w-4 h-4 text-amber-400" />
-              <span>Reset Scene</span>
+              <Layers className="w-4 h-4 shrink-0" />
+              <span>Mixed Reality</span>
             </button>
           </div>
 
-          {isPresenting && (
+          <div className="grid grid-cols-2 gap-2.5">
             <button
+              type="button"
+              onClick={onResetScene}
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-semibold border transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${secondaryBtn}`}
+            >
+              <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+              <span>Reset Scene</span>
+            </button>
+
+            <button
+              type="button"
               onClick={onRecenterSeated}
-              className={`w-full px-3 py-2 rounded-lg text-sm font-medium border flex items-center justify-center gap-1.5 ${
-                isDarkTheme
-                  ? 'bg-[#181a24] border-[#2c3040] text-sky-300 hover:bg-[#222533]'
-                  : 'bg-white border-slate-300 text-sky-700 hover:bg-slate-100'
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-semibold border transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${secondaryBtn}`}
+            >
+              <Compass className="w-3.5 h-3.5 shrink-0" />
+              <span>Recenter Rig</span>
+            </button>
+          </div>
+        </section>
+
+        {/* 2. VR Teleportation Locomotion & Optical Zoom */}
+        <section className="p-5 space-y-3.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-[10px] font-bold tracking-[0.18em] uppercase">
+              VR LOCOMOTION &amp; ZOOM
+            </h3>
+            <span
+              className={`text-xs font-mono font-semibold tabular-nums ${
+                isDarkTheme ? 'text-[#F5D547]' : 'text-[#141514]'
               }`}
             >
-              <Compass className="w-4 h-4" />
-              <span>Recenter Seated Placement</span>
-            </button>
-          )}
-        </div>
-
-        {/* 3. Shared Interaction Adapter Mode (Desktop + XR Parity) */}
-        <div
-          className={`p-3.5 rounded-xl border space-y-2.5 ${
-            isDarkTheme ? 'bg-[#12141b] border-[#232633]' : 'bg-slate-50 border-slate-200'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-mono uppercase tracking-wider text-slate-400">
-              Shared Interaction Adapter
+              {zoomMultiplier.toFixed(2)}×
             </span>
-            <span className="text-xs font-mono text-sky-400">
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={onZoomOut}
+              className={`min-h-[40px] px-2.5 py-2 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5 whitespace-nowrap ${secondaryBtn}`}
+            >
+              <ZoomOut className="w-3.5 h-3.5 shrink-0" />
+              <span>Zoom Out</span>
+            </button>
+            <button
+              type="button"
+              onClick={onResetZoom}
+              className={`min-h-[40px] px-2.5 py-2 rounded-lg text-xs font-mono font-semibold border tabular-nums ${secondaryBtn}`}
+            >
+              1.00×
+            </button>
+            <button
+              type="button"
+              onClick={onZoomIn}
+              className={`min-h-[40px] px-2.5 py-2 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5 whitespace-nowrap ${secondaryBtn}`}
+            >
+              <ZoomIn className="w-3.5 h-3.5 shrink-0" />
+              <span>Zoom In</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={onTeleportIntoThorax}
+              className="min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold border border-[#141514] bg-[#F5D547] text-[#141514] hover:bg-[#EBC834] flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors"
+            >
+              <Navigation className="w-3.5 h-3.5 shrink-0" />
+              <span>Step Into Artery</span>
+            </button>
+            <button
+              type="button"
+              onClick={onResetLocomotion}
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5 whitespace-nowrap ${secondaryBtn}`}
+            >
+              <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+              <span>Reset Rig</span>
+            </button>
+          </div>
+
+          <div className={`text-xs space-y-1.5 pt-1 ${mutedText}`}>
+            <div className="flex justify-between gap-3">
+              <span>Active Zone</span>
+              <span className={`font-semibold truncate ${isDarkTheme ? 'text-[#FAF7EC]' : 'text-[#141514]'}`}>
+                {diagnostics?.locomotionTargetLabel || 'Seated Observation'}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span>Rig Coordinates (m)</span>
+              <span className={`font-mono tabular-nums ${isDarkTheme ? 'text-[#FAF7EC]' : 'text-[#141514]'}`}>
+                {locoPos[0].toFixed(2)}, {locoPos[1].toFixed(2)}, {locoPos[2].toFixed(2)}
+              </span>
+            </div>
+            <p className="text-xs leading-relaxed pt-1">
+              Quest controls: Hold Grip or Left Stick ↑ to aim parabolic teleport · Left Stick ←/→ for 30° snap turn · Right Stick ↑/↓ to zoom.
+            </p>
+          </div>
+        </section>
+
+        {/* 3. Desktop Pointer Mode */}
+        <section className="p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-[10px] font-bold tracking-[0.18em] uppercase">POINTER MODE</h3>
+            <span className={`text-xs font-mono ${mutedText}`}>
               {diagnostics?.activeInteractionSource || desktopInteractionMode}
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div
+            className={`grid grid-cols-2 gap-1 p-1 rounded-lg border ${
+              isDarkTheme
+                ? 'bg-[#191A17] border-[#2C2E28]'
+                : 'bg-[#F2EDE0] border-[#141514]/20'
+            }`}
+          >
             <button
+              type="button"
               onClick={() => onDesktopModeChange('orbit')}
-              className={`px-3 py-2 rounded-lg text-sm font-medium border flex items-center justify-center gap-1.5 transition-all ${
+              className={`min-h-[38px] px-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
                 desktopInteractionMode === 'orbit'
-                  ? 'bg-sky-500/20 border-sky-400 text-sky-300 font-semibold'
-                  : isDarkTheme
-                  ? 'bg-[#171923] border-[#272a38] text-slate-300'
-                  : 'bg-white border-slate-300 text-slate-700'
+                  ? isDarkTheme
+                    ? 'bg-[#F5D547] text-[#141514] font-bold'
+                    : 'bg-[#141514] text-[#FAF7EC] font-bold'
+                  : mutedText
               }`}
             >
-              <MousePointerClick className="w-4 h-4" />
+              <MousePointerClick className="w-3.5 h-3.5 shrink-0" />
               <span>Orbit + Inspect</span>
             </button>
             <button
+              type="button"
               onClick={() => onDesktopModeChange('manipulate')}
-              className={`px-3 py-2 rounded-lg text-sm font-medium border flex items-center justify-center gap-1.5 transition-all ${
+              className={`min-h-[38px] px-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
                 desktopInteractionMode === 'manipulate'
-                  ? 'bg-[#e6b65c]/20 border-[#e6b65c] text-[#e6b65c] font-semibold'
-                  : isDarkTheme
-                  ? 'bg-[#171923] border-[#272a38] text-slate-300'
-                  : 'bg-white border-slate-300 text-slate-700'
+                  ? isDarkTheme
+                    ? 'bg-[#F5D547] text-[#141514] font-bold'
+                    : 'bg-[#141514] text-[#FAF7EC] font-bold'
+                  : mutedText
               }`}
             >
-              <Move className="w-4 h-4" />
+              <Move className="w-3.5 h-3.5 shrink-0" />
               <span>Grab Specimen</span>
             </button>
           </div>
-          <p className="text-xs text-slate-400 leading-snug">
-            Desktop: Drag in <span className="font-semibold">Grab Specimen</span> (or hold Shift+Drag) to rotate/reposition via the same adapter used by VR hand pinch & controllers.
-          </p>
-        </div>
+        </section>
 
-        {/* 4. Explicit WebXR Diagnostics */}
-        <div
-          className={`p-3.5 rounded-xl border space-y-2.5 ${
-            isDarkTheme ? 'bg-[#12141b] border-[#232633]' : 'bg-slate-50 border-slate-200'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-mono uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-              <Radio className="w-3.5 h-3.5 text-sky-400" />
-              WebXR Live Diagnostics
-            </span>
-            <span className="text-xs font-mono text-slate-400">
-              {diagnostics?.referenceSpaceType || 'none'}
-            </span>
-          </div>
+        {/* 4. Collapsible XR & RATK Technical Diagnostics */}
+        <section className="p-5">
+          <button
+            type="button"
+            onClick={() => setShowDiagnostics((prev) => !prev)}
+            aria-expanded={showDiagnostics}
+            className="w-full min-h-[36px] flex items-center justify-between text-[10px] font-bold tracking-[0.18em] uppercase"
+          >
+            <span>XR RUNTIME &amp; RATK DIAGNOSTICS</span>
+            {showDiagnostics ? (
+              <ChevronUp className={`w-4 h-4 ${mutedText}`} />
+            ) : (
+              <ChevronDown className={`w-4 h-4 ${mutedText}`} />
+            )}
+          </button>
 
-          <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-            <div className="flex items-center justify-between px-2.5 py-1.5 rounded border border-slate-700/30">
-              <span className="text-slate-400">HTTPS</span>
-              <span className={`px-1.5 py-0.5 rounded border ${badgeTone(isSecure)}`}>
-                {isSecure ? 'YES' : 'NO'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between px-2.5 py-1.5 rounded border border-slate-700/30">
-              <span className="text-slate-400">navigator.xr</span>
-              <span className={`px-1.5 py-0.5 rounded border ${badgeTone(diagnostics?.hasNavigatorXR)}`}>
-                {diagnostics?.hasNavigatorXR ? 'OK' : 'NONE'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between px-2.5 py-1.5 rounded border border-slate-700/30">
-              <span className="text-slate-400">immersive-vr</span>
-              <span className={`px-1.5 py-0.5 rounded border ${badgeTone(diagnostics?.features.immersiveVr)}`}>
-                {diagnostics?.features.immersiveVr || 'unknown'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between px-2.5 py-1.5 rounded border border-slate-700/30">
-              <span className="text-slate-400">hand-tracking</span>
-              <span className={`px-1.5 py-0.5 rounded border ${badgeTone(diagnostics?.features.handTracking)}`}>
-                {diagnostics?.features.handTracking || 'unknown'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between px-2.5 py-1.5 rounded border border-slate-700/30">
-              <span className="text-slate-400">local-floor</span>
-              <span className={`px-1.5 py-0.5 rounded border ${badgeTone(diagnostics?.features.localFloor)}`}>
-                {diagnostics?.features.localFloor || 'unknown'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between px-2.5 py-1.5 rounded border border-slate-700/30">
-              <span className="text-slate-400">Viewer Pose</span>
-              <span className={`px-1.5 py-0.5 rounded border ${badgeTone(diagnostics?.viewerTrackingState)}`}>
-                {diagnostics?.viewerTrackingState || 'unavailable'}
-              </span>
-            </div>
-          </div>
+          {showDiagnostics && (
+            <div className="mt-3.5 space-y-4 text-xs">
+              {/* Zero-Pill Specification Table */}
+              <dl
+                className={`divide-y border-t border-b ${dividerClass} ${
+                  isDarkTheme ? 'divide-[#2C2E28]' : 'divide-[#141514]/15'
+                }`}
+              >
+                <div className="py-2 flex items-center justify-between">
+                  <dt className={mutedText}>Runtime</dt>
+                  <dd className={`font-mono font-medium ${statusTextColor(diagnostics?.runtimeMode)}`}>
+                    {formatStatusLabel(diagnostics?.runtimeMode)}
+                  </dd>
+                </div>
+                <div className="py-2 flex items-center justify-between">
+                  <dt className={mutedText}>Secure Context (HTTPS)</dt>
+                  <dd className={`font-mono font-medium ${statusTextColor(isSecure)}`}>
+                    {isSecure ? '● Verified' : '✕ Insecure'}
+                  </dd>
+                </div>
+                <div className="py-2 flex items-center justify-between">
+                  <dt className={mutedText}>immersive-vr</dt>
+                  <dd className={`font-mono font-medium ${statusTextColor(diagnostics?.features.immersiveVr)}`}>
+                    {formatStatusLabel(diagnostics?.features.immersiveVr)}
+                  </dd>
+                </div>
+                <div className="py-2 flex items-center justify-between">
+                  <dt className={mutedText}>Hand Tracking</dt>
+                  <dd className={`font-mono font-medium ${statusTextColor(diagnostics?.features.handTracking)}`}>
+                    {formatStatusLabel(diagnostics?.features.handTracking)}
+                  </dd>
+                </div>
+                <div className="py-2 flex items-center justify-between">
+                  <dt className={mutedText}>RATK Planes / Meshes</dt>
+                  <dd className="font-mono tabular-nums">
+                    {diagnostics?.ratkPlanesCount ?? 0} planes / {diagnostics?.ratkMeshesCount ?? 0} meshes
+                  </dd>
+                </div>
+              </dl>
 
-          {diagnostics?.lastError && (
-            <div className="p-2.5 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-mono break-words">
-              Error: {diagnostics.lastError}
+              {diagnostics?.lastError && (
+                <div className="p-3 rounded-lg bg-[#C82828]/10 border border-[#C82828]/40 text-[#B91C1C] dark:text-[#FDA4AF] font-mono break-words">
+                  {diagnostics.lastError}
+                </div>
+              )}
+
+              {/* Connected Input Sources */}
+              <div className="space-y-2">
+                <div className={`font-semibold ${mutedText}`}>
+                  Active Input Sources ({diagnostics?.inputSources.length || 0})
+                </div>
+                {!diagnostics?.inputSources.length ? (
+                  <p className={mutedText}>
+                    No active XR controllers or tracked hands connected yet.
+                  </p>
+                ) : (
+                  <ul className="space-y-2">
+                    {diagnostics.inputSources.map((src) => (
+                      <li
+                        key={src.id}
+                        className={`py-2 border-t flex items-center justify-between gap-2 font-mono ${dividerClass}`}
+                      >
+                        <span className="flex items-center gap-1.5 truncate">
+                          {src.hasHand ? (
+                            <Hand className="w-3.5 h-3.5 text-[#F5D547] shrink-0" />
+                          ) : (
+                            <Gamepad2 className="w-3.5 h-3.5 text-current shrink-0" />
+                          )}
+                          <span>
+                            {src.handedness} {src.kind}
+                          </span>
+                        </span>
+                        <span className={statusTextColor(src.trackingState)}>
+                          {formatStatusLabel(src.trackingState)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Event Log */}
+              <div className="space-y-1.5">
+                <div className={`font-semibold ${mutedText}`}>Recent Session Events</div>
+                <div className="max-h-28 overflow-y-auto space-y-1 pr-1 font-mono text-[11px]">
+                  {(diagnostics?.events || []).map((ev) => (
+                    <div key={ev.id} className="flex items-start gap-1.5 leading-snug">
+                      <span className={mutedText}>{ev.timestamp}</span>
+                      <span
+                        className={
+                          ev.level === 'error'
+                            ? 'text-[#DC2626] dark:text-[#FDA4AF]'
+                            : ev.level === 'warn'
+                            ? 'text-[#B45309] dark:text-[#F5D547]'
+                            : 'text-[#141514] dark:text-[#FAF7EC]'
+                        }
+                      >
+                        [{ev.source}]
+                      </span>
+                      <span className="break-words">{ev.message}</span>
+                    </div>
+                  ))}
+                  {!diagnostics?.events.length && (
+                    <div className={mutedText}>Awaiting XR lifecycle events...</div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
-
-          {/* Connected Input Sources */}
-          <div className="space-y-1.5 pt-1.5 border-t border-slate-700/30">
-            <div className="text-xs font-mono text-slate-400 uppercase flex items-center justify-between">
-              <span>XR Input Sources ({diagnostics?.inputSources.length || 0})</span>
-              <span>{diagnostics?.isManipulatingSpecimen ? 'MANIPULATING' : 'IDLE'}</span>
-            </div>
-
-            {!diagnostics?.inputSources.length ? (
-              <div className="text-xs font-mono text-slate-400 py-2 px-2.5 rounded border border-dashed border-slate-700/40">
-                No active XRInputSources (enter VR with hands or controllers connected).
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                {diagnostics.inputSources.map((src) => (
-                  <div
-                    key={src.id}
-                    className={`p-2.5 rounded-lg border text-xs font-mono space-y-1 ${
-                      isDarkTheme ? 'bg-[#161923] border-[#282c3a]' : 'bg-white border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="flex items-center gap-1.5 font-semibold">
-                        {src.hasHand ? (
-                          <Hand className="w-3.5 h-3.5 text-[#e6b65c]" />
-                        ) : (
-                          <Gamepad2 className="w-3.5 h-3.5 text-sky-400" />
-                        )}
-                        [{src.index}] {src.handedness.toUpperCase()} ({src.kind})
-                      </span>
-                      <span className={`px-1.5 rounded border ${badgeTone(src.trackingState)}`}>
-                        {src.trackingState}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-slate-400">
-                      <span>ray: {src.targetRayMode}</span>
-                      <span>
-                        {src.hasHand
-                          ? `joints: ${src.visibleHandJoints}/${src.handJointCount}`
-                          : `gamepad: ${src.hasGamepad ? 'yes' : 'no'}`}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Event Log */}
-          <div className="space-y-1.5 pt-1.5 border-t border-slate-700/30">
-            <div className="text-xs font-mono text-slate-400 uppercase">Recent XR Events</div>
-            <div className="max-h-28 overflow-y-auto space-y-1 pr-1">
-              {(diagnostics?.events || []).map((ev) => (
-                <div
-                  key={ev.id}
-                  className="text-xs font-mono flex items-start gap-1.5 leading-snug"
-                >
-                  <span className="text-slate-500 shrink-0">{ev.timestamp}</span>
-                  <span
-                    className={
-                      ev.level === 'error'
-                        ? 'text-rose-400'
-                        : ev.level === 'warn'
-                        ? 'text-amber-400'
-                        : 'text-sky-300'
-                    }
-                  >
-                    [{ev.source}]
-                  </span>
-                  <span className="text-slate-300 break-words">{ev.message}</span>
-                </div>
-              ))}
-              {!diagnostics?.events.length && (
-                <div className="text-xs font-mono text-slate-400">Awaiting XR lifecycle events...</div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Physical Device Disclaimer */}
-        <div className="text-xs text-slate-400 leading-relaxed flex items-start gap-2 px-1">
-          <ShieldCheck className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
-          <span>
-            Reuses existing pulmonary/thoracic embolism geometry & labels. Meta Quest browser & hand tracking compatibility must be verified on a physical headset over HTTPS.
-          </span>
-        </div>
+        </section>
       </div>
     </aside>
   );

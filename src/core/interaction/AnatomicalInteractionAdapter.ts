@@ -8,8 +8,17 @@ import { CLOT_ANNOTATIONS } from '../../data/clotAnnotations.ts';
 import { EXPLORER_ANATOMY_STRUCTURES } from '../../data/explorerAnatomyData.ts';
 import { ClotAnnotation, ExplorerAnatomyId, ScaleLevel } from '../../types/biomedical.ts';
 import { AnatomicalLabelPayload, InteractionSourceType } from '../../types/webxr.ts';
+import { AnatomicalHoverLabelInfo, resolveHoverLabelInfo } from '../../data/anatomicalHoverLabels.ts';
 
-export type VRHudAction = 'prevLabel' | 'nextLabel' | 'cycleScale' | 'resetScene' | 'exitVR';
+export type VRHudAction =
+  | 'prevLabel'
+  | 'nextLabel'
+  | 'cycleScale'
+  | 'zoomIn'
+  | 'zoomOut'
+  | 'warpThoracic'
+  | 'resetScene'
+  | 'exitVR';
 
 export interface AnatomicalAdapterHost {
   sceneContainer: THREE.Group;
@@ -29,6 +38,8 @@ export interface AnatomicalAdapterHost {
   onSelectStructure: (id: ExplorerAnatomyId, moveCamera: boolean) => void;
   onHoverAnnotation: (ann: ClotAnnotation | null) => void;
   onCycleScale: () => void;
+  onZoomDelta?: (factor: number) => void;
+  onStepInsideThoracic?: () => void;
   onResetScene: () => void;
   onExitVR: () => Promise<void>;
   onAdapterStateChange?: (state: {
@@ -57,8 +68,18 @@ export interface RayResolutionResult {
   action?: VRHudAction;
   annotationId?: string;
   structureId?: ExplorerAnatomyId;
+  hitObject?: THREE.Object3D;
+  hitObjectName?: string;
   point?: THREE.Vector3;
   distance?: number;
+}
+
+export interface AnatomicalHoverResolution {
+  hitObject: THREE.Object3D;
+  namedObject: THREE.Object3D;
+  info: AnatomicalHoverLabelInfo;
+  point: THREE.Vector3;
+  distance: number;
 }
 
 /**
@@ -141,7 +162,7 @@ export class AnatomicalInteractionAdapter {
     }
 
     // 2. 3D Anatomical Hotspot Targets
-    if (this.host.isAnnotationsVisible()) {
+    if (this.host.isAnnotationsVisible() && this.host.annotationsGroup.visible) {
       const activeHotspots = this.host.hotspotHitTargets.filter((t) => t.parent && t.parent.visible);
       const hotspotHits = this.raycaster.intersectObjects(activeHotspots, false);
       if (hotspotHits.length > 0) {
@@ -158,25 +179,24 @@ export class AnatomicalInteractionAdapter {
     }
 
     // 3. Existing Organ & Vessel / Clot Geometry
-    const organTargets: THREE.Object3D[] = [];
-    if (this.host.thoracicGroup.visible) organTargets.push(this.host.thoracicGroup);
-    if (this.host.embolusMacroMesh.visible) organTargets.push(this.host.embolusMacroMesh);
-    if (this.host.vesselCutawayGroup.visible) organTargets.push(this.host.vesselCutawayGroup);
-    if (this.host.microscopicRoot.visible) organTargets.push(this.host.microscopicRoot);
-    if (this.host.industrialCutaway.visible) organTargets.push(this.host.industrialCutaway);
+    const organTargets = this.getVisibleOrganTargets();
 
     if (organTargets.length > 0) {
       const hits = this.raycaster.intersectObjects(organTargets, true);
-      if (hits.length > 0) {
-        const hit = hits[0];
+      const hit = this.selectBestOrganHit(hits);
+      if (hit) {
         const structureId = this.inferExplorerStructureFromObject(hit.object);
         const nearestAnnId = this.findNearestVisibleHotspotId(hit.point, this.isVRPresenting ? 0.35 : 8.0);
+        const labelMatch = resolveHoverLabelInfo(hit.object);
+        const hitObjectName = labelMatch?.namedObject.name || hit.object.name || undefined;
 
         if (structureId) {
           return {
             kind: 'structure',
             structureId,
             annotationId: nearestAnnId ?? undefined,
+            hitObject: hit.object,
+            hitObjectName,
             point: hit.point.clone(),
             distance: hit.distance,
           };
@@ -186,6 +206,8 @@ export class AnatomicalInteractionAdapter {
           return {
             kind: 'hotspot',
             annotationId: nearestAnnId,
+            hitObject: hit.object,
+            hitObjectName,
             point: hit.point.clone(),
             distance: hit.distance,
           };
@@ -193,6 +215,8 @@ export class AnatomicalInteractionAdapter {
 
         return {
           kind: 'specimen',
+          hitObject: hit.object,
+          hitObjectName,
           point: hit.point.clone(),
           distance: hit.distance,
         };
@@ -200,6 +224,104 @@ export class AnatomicalInteractionAdapter {
     }
 
     return { kind: 'none' };
+  }
+
+  /**
+   * Resolves direct anatomical structure hover targets across all scales,
+   * looking through translucent outer lung/cardiac envelopes so individual
+   * pulmonary artery segments and thrombi label cleanly.
+   */
+  public resolveAnatomicalHover(
+    rayOriginOrNdc: THREE.Vector3 | THREE.Vector2,
+    rayDirectionOrCamera: THREE.Vector3 | THREE.Camera
+  ): AnatomicalHoverResolution | null {
+    if (rayOriginOrNdc instanceof THREE.Vector2 && rayDirectionOrCamera instanceof THREE.Camera) {
+      this.raycaster.setFromCamera(rayOriginOrNdc, rayDirectionOrCamera);
+    } else if (rayOriginOrNdc instanceof THREE.Vector3 && rayDirectionOrCamera instanceof THREE.Vector3) {
+      this.raycaster.set(rayOriginOrNdc, rayDirectionOrCamera.clone().normalize());
+    } else {
+      return null;
+    }
+
+    const organTargets = this.getVisibleOrganTargets();
+    if (organTargets.length === 0) return null;
+
+    const hits = this.raycaster.intersectObjects(organTargets, true);
+    const bestHit = this.selectBestOrganHit(hits, true);
+    if (!bestHit) return null;
+
+    const match = resolveHoverLabelInfo(bestHit.object);
+    if (!match) return null;
+
+    return {
+      hitObject: bestHit.object,
+      namedObject: match.namedObject,
+      info: match.info,
+      point: bestHit.point.clone(),
+      distance: bestHit.distance,
+    };
+  }
+
+  private getVisibleOrganTargets(): THREE.Object3D[] {
+    const organTargets: THREE.Object3D[] = [];
+    if (this.host.embolusMacroMesh.visible) organTargets.push(this.host.embolusMacroMesh);
+    if (this.host.vesselCutawayGroup.visible) organTargets.push(this.host.vesselCutawayGroup);
+    if (this.host.microscopicRoot.visible) organTargets.push(this.host.microscopicRoot);
+    if (this.host.industrialCutaway.visible) organTargets.push(this.host.industrialCutaway);
+    return organTargets;
+  }
+
+  private getOrganHitPriority(obj: THREE.Object3D): number {
+    const match = resolveHoverLabelInfo(obj);
+    const resolvedName = match?.namedObject.name || obj.name || '';
+
+    if (
+      resolvedName === 'RightLung' ||
+      resolvedName === 'LeftLung'
+    ) {
+      return 4;
+    }
+
+    if (resolvedName === 'HeartAnatomy') {
+      return 3;
+    }
+
+    if (
+      resolvedName === 'CutawayInferiorBranchMesh' ||
+      resolvedName === 'RightVentricleMesh'
+    ) {
+      return 2;
+    }
+
+    if (match) {
+      return 1;
+    }
+
+    return 5;
+  }
+
+  private selectBestOrganHit(
+    hits: THREE.Intersection[],
+    requireHoverLabel = false
+  ): THREE.Intersection | null {
+    if (hits.length === 0) return null;
+
+    let bestHit: THREE.Intersection | null = null;
+    let bestPriority = Infinity;
+
+    for (const hit of hits) {
+      if (!hit.object.visible) continue;
+      if (requireHoverLabel && !resolveHoverLabelInfo(hit.object)) continue;
+
+      const priority = this.getOrganHitPriority(hit.object);
+      if (priority < bestPriority) {
+        bestPriority = priority;
+        bestHit = hit;
+        if (priority === 1) break;
+      }
+    }
+
+    return bestHit ?? (requireHoverLabel ? null : hits[0]);
   }
 
   /**
@@ -411,6 +533,18 @@ export class AnatomicalInteractionAdapter {
         this.host.onCycleScale();
         this.emitState(sourceType, false, this.getCurrentLabelPayload().title, 'Cycled anatomical scale');
         break;
+      case 'zoomIn':
+        this.host.onZoomDelta?.(1.25);
+        this.emitState(sourceType, false, this.getCurrentLabelPayload().title, 'Zoomed in anatomical specimen');
+        break;
+      case 'zoomOut':
+        this.host.onZoomDelta?.(0.8);
+        this.emitState(sourceType, false, this.getCurrentLabelPayload().title, 'Zoomed out anatomical specimen');
+        break;
+      case 'warpThoracic':
+        this.host.onStepInsideThoracic?.();
+        this.emitState(sourceType, false, this.getCurrentLabelPayload().title, 'Teleported into artery & thrombus lumen');
+        break;
       case 'resetScene':
         this.host.onResetScene();
         this.emitState(sourceType, false, this.getCurrentLabelPayload().title, 'Scene reset to initial placement');
@@ -430,18 +564,6 @@ export class AnatomicalInteractionAdapter {
       return true;
     });
 
-    if (scale === 'thoracic') {
-      const structureOrder: ExplorerAnatomyId[] = ['deepVeins', 'heart', 'pulmonaryArtery', 'lungs'];
-      const currentStruct = this.host.getActiveStructureId();
-      const idx = currentStruct ? structureOrder.indexOf(currentStruct) : -1;
-      const nextIdx = (idx + direction + structureOrder.length) % structureOrder.length;
-      const nextId = structureOrder[nextIdx];
-      this.host.onSelectStructure(nextId, false);
-      this.host.onSelectAnnotation(null);
-      this.emitState(sourceType, false, EXPLORER_ANATOMY_STRUCTURES[nextId].label, `Inspected ${EXPLORER_ANATOMY_STRUCTURES[nextId].label}`);
-      return;
-    }
-
     if (candidates.length === 0) return;
     const activeId = this.host.getActiveAnnotationId();
     const idx = activeId ? candidates.findIndex((c) => c.id === activeId) : -1;
@@ -452,7 +574,7 @@ export class AnatomicalInteractionAdapter {
   }
 
   /**
-   * Builds a normalized label card payload from existing annotation / anatomy data.
+   * Builds a normalized label card payload from existing annotation / vascular data.
    */
   public getCurrentLabelPayload(): AnatomicalLabelPayload {
     const activeAnnId = this.host.getActiveAnnotationId();
@@ -468,42 +590,34 @@ export class AnatomicalInteractionAdapter {
           metricValue: ann.metricValue,
           metricLabel: ann.metricLabel,
           summary: ann.summary,
-          scaleLabel: ann.scale === 'microscopic' ? '50 µm Fibrin Matrix' : '4–8 mm Vascular Thrombus',
-          accentHex: ann.colorHex || '#e6b65c',
+          scaleLabel: ann.scale === 'microscopic' ? '50 µm Fibrin Matrix' : '4–8 mm Artery & Thrombus',
+          accentHex: ann.colorHex || '#F5D547',
           scale: ann.scale === 'both' ? 'clot' : ann.scale,
         };
       }
     }
 
-    const activeStructId = this.host.getActiveStructureId();
-    if (activeStructId && EXPLORER_ANATOMY_STRUCTURES[activeStructId]) {
-      const struct = EXPLORER_ANATOMY_STRUCTURES[activeStructId];
-      return {
-        id: struct.id,
-        kind: 'structure',
-        title: struct.label,
-        subtitle: struct.sublabel,
-        badge: struct.badge,
-        metricValue: struct.clinicalRole,
-        summary: struct.prewrittenExplanation,
-        scaleLabel: '30 cm Thoracic & PE System',
-        accentHex: '#38bdf8',
-        structureId: struct.id,
-        scale: 'thoracic',
-      };
-    }
+    const scale = this.host.getCurrentScale();
+    const scaleLabel =
+      scale === 'microscopic'
+        ? '50 µm Fibrin Matrix'
+        : scale === 'clot'
+        ? '4 mm Impacted Thrombus'
+        : scale === 'industrialCutaway'
+        ? 'Isolated Vascular CAD Cutaway'
+        : '8 mm Pulmonary Artery Cutaway';
 
     return {
-      id: 'pulmonary-embolism-specimen',
+      id: 'pulmonary-artery-thrombus-fibrin',
       kind: 'specimen',
-      title: 'Pulmonary Embolism Specimen',
-      subtitle: 'Thoracic Vessels, Heart, Lungs & Thrombus Matrix',
-      badge: 'ILLUSTRATIVE 3D MODEL',
-      metricValue: 'Pinch or Point',
-      summary: 'Pinch or trigger-click a structure or hotspot to inspect its anatomical label; pinch and move to rotate or reposition.',
-      scaleLabel: this.host.getCurrentScale(),
-      accentHex: '#e6b65c',
-      scale: this.host.getCurrentScale(),
+      title: 'Artery, Thrombus & Fibrin',
+      subtitle: 'Pulmonary Artery Cutaway, Thrombus Core & Fibrin Matrix',
+      badge: 'VASCULAR DISEASE 3D',
+      metricValue: 'Artery · Thrombus · Fibrin',
+      summary: 'Navigate inside the pulmonary artery cutaway, impacted thrombus body, and cross-linked fibrin ultrastructure.',
+      scaleLabel,
+      accentHex: '#F5D547',
+      scale,
     };
   }
 

@@ -83,16 +83,17 @@ export function createThoracicOrganGroup(): THREE.Group {
   // Left lung (2 lobes: superior, inferior with cardiac notch)
   const leftLungGroup = new THREE.Group();
   leftLungGroup.name = 'LeftLung';
+  const leftLungMat = lungMat.clone();
 
   const lSupGeo = new THREE.SphereGeometry(7.0, 24, 20);
   lSupGeo.scale(0.8, 1.35, 0.92);
   lSupGeo.translate(9.0, 7.2, 0);
-  const lSupMesh = new THREE.Mesh(lSupGeo, lungMat);
+  const lSupMesh = new THREE.Mesh(lSupGeo, leftLungMat);
 
   const lInfGeo = new THREE.SphereGeometry(7.8, 24, 20);
   lInfGeo.scale(0.88, 1.45, 1.0);
   lInfGeo.translate(9.2, -8.5, -0.2);
-  const lInfMesh = new THREE.Mesh(lInfGeo, lungMat);
+  const lInfMesh = new THREE.Mesh(lInfGeo, leftLungMat);
 
   leftLungGroup.add(lSupMesh, lInfMesh);
   lungsGroup.add(leftLungGroup);
@@ -148,7 +149,7 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(1.0, -7.0, 1.0),
     new THREE.Vector3(1.8, -5.0, 1.4), // entry into RA
   ]);
-  const ivcMesh = new THREE.Mesh(new THREE.TubeGeometry(ivcCurve, 20, 1.35, 12, false), veinMat);
+  const ivcMesh = new THREE.Mesh(new THREE.TubeGeometry(ivcCurve, 20, 1.35, 12, false), veinMat.clone());
   ivcMesh.name = 'InferiorVenaCava';
   deepVeinsGroup.add(ivcMesh);
 
@@ -158,7 +159,8 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(-1.8, -17.0, -0.1),
     new THREE.Vector3(-0.2, -15.0, 0.2),
   ]);
-  const rIliacMesh = new THREE.Mesh(new THREE.TubeGeometry(rIliacCurve, 12, 1.0, 10, false), veinMat);
+  const rIliacMesh = new THREE.Mesh(new THREE.TubeGeometry(rIliacCurve, 12, 1.0, 10, false), veinMat.clone());
+  rIliacMesh.name = 'RightCommonIliacVein';
   deepVeinsGroup.add(rIliacMesh);
 
   // Left common iliac vein
@@ -167,7 +169,8 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(1.4, -17.0, -0.1),
     new THREE.Vector3(-0.2, -15.0, 0.2),
   ]);
-  const lIliacMesh = new THREE.Mesh(new THREE.TubeGeometry(lIliacCurve, 12, 1.0, 10, false), veinMat);
+  const lIliacMesh = new THREE.Mesh(new THREE.TubeGeometry(lIliacCurve, 12, 1.0, 10, false), veinMat.clone());
+  lIliacMesh.name = 'LeftCommonIliacVein';
   deepVeinsGroup.add(lIliacMesh);
 
   // Thrombus origin nodule in deep leg/pelvic vein
@@ -197,7 +200,8 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(0.1, 12, 0.2),
     new THREE.Vector3(0.2, 6.5, 0.4), // Carina at T4/T5
   ]);
-  const tracheaMesh = new THREE.Mesh(new THREE.TubeGeometry(tracheaCurve, 16, 1.25, 12, false), airwayMat);
+  const tracheaMesh = new THREE.Mesh(new THREE.TubeGeometry(tracheaCurve, 16, 1.25, 12, false), airwayMat.clone());
+  tracheaMesh.name = 'TracheaAirway';
   root.add(tracheaMesh);
 
   const rBronchusCurve = new THREE.CatmullRomCurve3([
@@ -205,7 +209,8 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(-3.5, 4.0, -0.2),
     new THREE.Vector3(-7.2, 1.5, -0.8),
   ]);
-  const rBronchusMesh = new THREE.Mesh(new THREE.TubeGeometry(rBronchusCurve, 14, 0.95, 10, false), airwayMat);
+  const rBronchusMesh = new THREE.Mesh(new THREE.TubeGeometry(rBronchusCurve, 14, 0.95, 10, false), airwayMat.clone());
+  rBronchusMesh.name = 'RightMainBronchus';
   root.add(rBronchusMesh);
 
   const lBronchusCurve = new THREE.CatmullRomCurve3([
@@ -213,7 +218,8 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(4.2, 4.5, -0.3),
     new THREE.Vector3(8.0, 2.8, -0.6),
   ]);
-  const lBronchusMesh = new THREE.Mesh(new THREE.TubeGeometry(lBronchusCurve, 14, 0.85, 10, false), airwayMat);
+  const lBronchusMesh = new THREE.Mesh(new THREE.TubeGeometry(lBronchusCurve, 14, 0.85, 10, false), airwayMat.clone());
+  lBronchusMesh.name = 'LeftMainBronchus';
   root.add(lBronchusMesh);
 
   // 5. Pulmonary Arterial Tree (Vessels in deoxygenated arterial blue)
@@ -232,7 +238,7 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(0.2, 3.2, 1.8),
     new THREE.Vector3(-0.2, 5.0, 1.2), // bifurcation
   ]);
-  const trunkMesh = new THREE.Mesh(new THREE.TubeGeometry(trunkCurve, 16, 1.5, 14, false), paMat);
+  const trunkMesh = new THREE.Mesh(new THREE.TubeGeometry(trunkCurve, 16, 1.5, 14, false), paMat.clone());
   trunkMesh.name = 'PulmonaryTrunkMesh';
   paGroup.add(trunkMesh);
 
@@ -242,7 +248,7 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(-4.5, 4.2, 0.5),
     new THREE.Vector3(-8.5, 2.0, 0.2),
   ]);
-  const rpaMesh = new THREE.Mesh(new THREE.TubeGeometry(rpaCurve, 16, 1.2, 12, false), paMat);
+  const rpaMesh = new THREE.Mesh(new THREE.TubeGeometry(rpaCurve, 16, 1.2, 12, false), paMat.clone());
   rpaMesh.name = 'RightPulmonaryArteryMesh';
   paGroup.add(rpaMesh);
 
@@ -252,7 +258,7 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(-9.8, -2.5, 0.0),
     new THREE.Vector3(-10.8, -7.5, -0.4),
   ]);
-  const rllMesh = new THREE.Mesh(new THREE.TubeGeometry(rllCurve, 16, 0.95, 10, false), paMat);
+  const rllMesh = new THREE.Mesh(new THREE.TubeGeometry(rllCurve, 16, 0.95, 10, false), paMat.clone());
   rllMesh.name = 'RightLowerLobeArteryMesh';
   paGroup.add(rllMesh);
 
@@ -263,7 +269,7 @@ export function createThoracicOrganGroup(): THREE.Group {
     new THREE.Vector3(8.5, 3.8, 0.4),
     new THREE.Vector3(10.5, -2.0, 0.1),
   ]);
-  const lpaMesh = new THREE.Mesh(new THREE.TubeGeometry(lpaCurve, 20, 1.15, 12, false), paMat);
+  const lpaMesh = new THREE.Mesh(new THREE.TubeGeometry(lpaCurve, 20, 1.15, 12, false), paMat.clone());
   lpaMesh.name = 'LeftPulmonaryArteryMesh';
   paGroup.add(lpaMesh);
 

@@ -4,10 +4,11 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { X, Search, ExternalLink, History, ShieldAlert } from 'lucide-react';
+import { X, Search, ExternalLink, History, ShieldAlert, Download } from 'lucide-react';
 import { ExplorerAnatomyId } from '../types/biomedical.ts';
 import {
   EvidenceSourceMode,
+  EvidenceVerificationCheckResult,
   FederatedEvidenceItem,
   ResearchFederationResult,
 } from '../types/federatedEvidence.ts';
@@ -15,6 +16,11 @@ import {
   formatVerificationStateLabel,
   researchFederationService,
 } from '../services/researchFederationService.ts';
+import {
+  downloadEvidenceJsonReport,
+  downloadEvidencePdfReport,
+  ReportExportFormat,
+} from '../services/evidenceReportExporter.ts';
 import {
   clearAllRecentSearches,
   deleteRecentSearch,
@@ -69,6 +75,10 @@ export const EnthalpyXdcSearchWindow: React.FC<EnthalpyXdcSearchWindowProps> = (
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<ResearchFederationResult | null>(null);
   const [selectedEvidence, setSelectedEvidence] = useState<FederatedEvidenceItem | null>(null);
+  const [reportFormat, setReportFormat] = useState<ReportExportFormat>('pdf');
+  const [lastVerificationResult, setLastVerificationResult] =
+    useState<EvidenceVerificationCheckResult | null>(null);
+  const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
   const [recentSearches, setRecentSearches] = useState<RecentClinicalSearch[]>(() =>
     loadRecentSearches(XDC_RECENT_SEARCHES_KEY)
   );
@@ -164,6 +174,27 @@ export const EnthalpyXdcSearchWindow: React.FC<EnthalpyXdcSearchWindowProps> = (
     });
   };
 
+  const handleDownloadReport = () => {
+    if (!selectedEvidence) return;
+    const context = {
+      query: result?.query || queryInput || currentStructure.label,
+      anatomyId: selectedStructureId,
+      anatomyLabel: currentStructure.label,
+      clotPathProgress,
+      evidenceMode: result?.mode || evidenceSourceMode,
+      verificationResult: lastVerificationResult,
+    };
+
+    if (reportFormat === 'pdf') {
+      downloadEvidencePdfReport(selectedEvidence, context);
+      setDownloadStatus('PDF Downloaded');
+    } else {
+      downloadEvidenceJsonReport(selectedEvidence, context);
+      setDownloadStatus('JSON Downloaded');
+    }
+    setTimeout(() => setDownloadStatus(null), 1800);
+  };
+
   if (!isOpen) return null;
 
   // Strictly black-and-white wireframe tokens paired with app's dark/light base
@@ -192,7 +223,7 @@ export const EnthalpyXdcSearchWindow: React.FC<EnthalpyXdcSearchWindowProps> = (
         className={`w-full max-w-5xl h-[86vh] max-h-[820px] border flex flex-col overflow-hidden ${windowShell}`}
       >
         {/* Top Window Header */}
-        <div className={`px-4 py-3 border-b flex items-center justify-between gap-3 shrink-0 ${subBar}`}>
+        <div className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3 shrink-0 ${subBar}`}>
           <div className="min-w-0 flex flex-wrap items-center gap-2">
             <span className="text-xs sm:text-sm font-mono font-bold uppercase tracking-widest">
               ENTHALPY × XDC // BLOCKCHAIN RESEARCH SEARCH
@@ -205,19 +236,68 @@ export const EnthalpyXdcSearchWindow: React.FC<EnthalpyXdcSearchWindowProps> = (
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            title="Close blockchain search window (Esc)"
-            className={`px-2 py-1 border text-xs font-mono uppercase inline-flex items-center gap-1 transition-colors shrink-0 ${
-              isDarkTheme
-                ? 'border-white/30 text-neutral-200 hover:bg-white hover:text-black'
-                : 'border-black/30 text-neutral-800 hover:bg-black hover:text-white'
-            }`}
-          >
-            <X className="w-3.5 h-3.5" />
-            <span>Close</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Monochrome PDF / JSON Format Selector + Download Report Button */}
+            <div
+              role="group"
+              aria-label="Report download format"
+              className={`inline-flex border ${wireframeBorder} ${
+                isDarkTheme ? 'bg-black' : 'bg-white'
+              }`}
+            >
+              {(['pdf', 'json'] as ReportExportFormat[]).map((fmt) => {
+                const active = reportFormat === fmt;
+                return (
+                  <button
+                    key={fmt}
+                    type="button"
+                    onClick={() => setReportFormat(fmt)}
+                    title={`Export summary as ${fmt.toUpperCase()}`}
+                    className={`px-2 py-1 text-[10px] font-mono uppercase transition-colors ${
+                      active
+                        ? isDarkTheme
+                          ? 'bg-white text-black font-bold'
+                          : 'bg-black text-white font-bold'
+                        : isDarkTheme
+                        ? 'text-neutral-300 hover:bg-white/10'
+                        : 'text-neutral-700 hover:bg-black/5'
+                    }`}
+                  >
+                    {fmt}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={handleDownloadReport}
+              disabled={!selectedEvidence}
+              title={
+                selectedEvidence
+                  ? `Download ${reportFormat.toUpperCase()} summary of selected evidence & provenance`
+                  : 'Select an evidence item to download its report'
+              }
+              className={`px-2.5 py-1 border text-xs font-mono font-bold uppercase inline-flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${inverseButton}`}
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{downloadStatus || 'Download Report'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onClose}
+              title="Close blockchain search window (Esc)"
+              className={`px-2 py-1 border text-xs font-mono uppercase inline-flex items-center gap-1 transition-colors shrink-0 ${
+                isDarkTheme
+                  ? 'border-white/30 text-neutral-200 hover:bg-white hover:text-black'
+                  : 'border-black/30 text-neutral-800 hover:bg-black hover:text-white'
+              }`}
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Close</span>
+            </button>
+          </div>
         </div>
 
         {/* Search Input + 3-Mode Selector + Quick Entities + Recent Searches */}
@@ -529,6 +609,7 @@ export const EnthalpyXdcSearchWindow: React.FC<EnthalpyXdcSearchWindowProps> = (
               onClose={() => setSelectedEvidence(null)}
               layoutMode="pane"
               isDarkTheme={isDarkTheme}
+              onVerificationResult={setLastVerificationResult}
             />
           </div>
         </div>
