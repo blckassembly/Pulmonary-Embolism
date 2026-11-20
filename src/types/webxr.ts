@@ -100,3 +100,21 @@ export interface SpecimenPlacementConfig {
   hudPosition: [number, number, number];
   hudLocalFallbackPosition: [number, number, number];
 }
+
+export interface VRPerformanceTelemetry {
+  fps: number;
+  minFps: number;
+  frameTimeMs: number;
+  maxFrameTimeMs: number;
+  frameHistoryMs: number[];
+  drawCalls: number;
+  triangles: number;
+  geometries: number;
+  textures: number;
+  pixelRatio: number;
+  jsHeapMB: number | null;
+  sessionKind: 'immersive-vr' | 'immersive-ar' | 'quest-sim';
+  scale: ScaleLevel;
+  isSoftwareGl: boolean;
+}
+

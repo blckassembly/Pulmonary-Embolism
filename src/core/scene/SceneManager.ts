@@ -5,14 +5,21 @@
 
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { LayerVisibility, ScaleLevel, ClotAnnotation, AnnotationScreenPosition, IndustrialCalloutPoint, ExplorerAnatomyId } from '../../types/biomedical.ts';
-import { DesktopInteractionMode, XRDiagnosticsState } from '../../types/webxr.ts';
+import { DesktopInteractionMode, VRPerformanceTelemetry, XRDiagnosticsState } from '../../types/webxr.ts';
 import { CLOT_ANNOTATIONS } from '../../data/clotAnnotations.ts';
 import { createEmbolusMacroMesh, createVesselCutawayGroup, HemodynamicParticles } from '../procedural/vesselGeometry.ts';
 import { createIndustrialCutawayGroup, IndustrialCutawayGroup } from '../procedural/industrialCutaway.ts';
 import { MicroscopicChamber } from './MicroscopicChamber.ts';
+import { FibrinLeaderLineItem, FibrinLeaderLineManager } from './FibrinLeaderLineManager.ts';
+import { SpatialAudioState, ThrombusSpatialAudioManager } from '../audio/ThrombusSpatialAudioManager.ts';
 import { AnatomicalInteractionAdapter } from '../interaction/AnatomicalInteractionAdapter.ts';
 import { WebXRControllerRig } from '../xr/WebXRControllerRig.ts';
+import { VRCenterReticle, VRReticleHudState, VRReticleTargetState } from '../xr/VRCenterReticle.ts';
 import { AnatomicalHoverLabelInfo, SceneHoverLabelState, resolveHoverLabelInfo } from '../../data/anatomicalHoverLabels.ts';
 
 export interface SceneManagerCallbacks {
@@ -26,9 +33,13 @@ export interface SceneManagerCallbacks {
   onSelectStructureFromScene?: (structureId: ExplorerAnatomyId) => void;
   onHoverAnnotation?: (annotation: ClotAnnotation | null) => void;
   onAnnotationPositionsUpdate?: (positions: Record<string, AnnotationScreenPosition>) => void;
+  onFibrinLeaderLinesUpdate?: (items: FibrinLeaderLineItem[]) => void;
   onClotPathProgressChange?: (progress: number) => void;
   onXRDiagnosticsChange?: (diagnostics: XRDiagnosticsState) => void;
   onXRSessionStateChange?: (isPresenting: boolean) => void;
+  onVRTelemetryUpdate?: (telemetry: VRPerformanceTelemetry | null) => void;
+  onSpatialAudioStateChange?: (state: SpatialAudioState) => void;
+  onVRReticleStateChange?: (state: VRReticleHudState) => void;
   onWebGLContextChange?: (lost: boolean) => void;
 }
 
@@ -41,6 +52,7 @@ export class SceneManager {
 
   // Multi-scale scene roots
   public microscopicChamber: MicroscopicChamber;
+  public fibrinLeaderLines: FibrinLeaderLineManager;
   public vesselCutawayGroup: THREE.Group;
   public embolusMacroMesh: THREE.Mesh;
   public thoracicGroup: THREE.Group = new THREE.Group();
@@ -110,9 +122,38 @@ export class SceneManager {
   private callbacks: SceneManagerCallbacks = {};
   public container: HTMLDivElement;
 
-  // Shared Anatomical Interaction Adapter & WebXR Rig
+  // Lightweight VR performance telemetry sampler (active only during VR/MR or Quest simulator)
+  private telemetryLastTickMs = 0;
+  private telemetryLastEmitMs = 0;
+  private telemetryFrameSamples: number[] = [];
+  private telemetryWasActive = false;
+
+  // Industrial Depth-of-Field (DOF) optical focus range [5 µm tight macro .. 50 µm deep clarity]
+  private dofFocusRangeUm = 50;
+  private dofComposer: EffectComposer | null = null;
+  private dofBokehPass: BokehPass | null = null;
+  private dofOutputPass: OutputPass | null = null;
+
+  // Shared Anatomical Interaction Adapter, WebXR Rig, 3D Spatial Audio & VR Reticle
   public interactionAdapter!: AnatomicalInteractionAdapter;
   public webXR!: WebXRControllerRig;
+  public spatialAudio: ThrombusSpatialAudioManager;
+  public vrCenterReticle: VRCenterReticle;
+  private tempAudioTargetPos = new THREE.Vector3();
+  private reticleRaycaster = new THREE.Raycaster();
+  private tempReticleOrigin = new THREE.Vector3();
+  private tempReticleDir = new THREE.Vector3();
+  private tempReticleQuat = new THREE.Quaternion();
+  private reticleRaycastFrame = 0;
+  private lastReticleState: VRReticleTargetState = 'idle';
+  private lastReticleLabel: string | null = null;
+  private hapticRaycaster = new THREE.Raycaster();
+  private tempClotCoreWorld = new THREE.Vector3();
+  private tempClotScale = new THREE.Vector3();
+  private controllerHapticState = new Map<
+    number,
+    { wasIntersecting: boolean; lastPulseMs: number; lastIntensity: number }
+  >();
   private desktopInteractionMode: DesktopInteractionMode = 'orbit';
   private pointerSourceType: 'mouse' | 'touch' = 'mouse';
   private cleanupPointerListeners?: () => void;
@@ -130,6 +171,7 @@ export class SceneManager {
   private hotspotHitTargets: THREE.Object3D[] = [];
   private activeAnnotationId: string | null = null;
   private hoveredAnnotationId: string | null = null;
+  private isSidebarCollapsed = false;
   private layersVisibility: LayerVisibility = {
     thoracicLungs: true,
     pulmonaryArteries: true,
@@ -250,6 +292,7 @@ export class SceneManager {
     // 5. Build Sub-Scenes into sceneContainer
     this.microscopicChamber = new MicroscopicChamber();
     this.sceneContainer.add(this.microscopicChamber.root);
+    this.fibrinLeaderLines = new FibrinLeaderLineManager(this.microscopicChamber);
 
     this.vesselCutawayGroup = createVesselCutawayGroup();
     this.vesselCutawayGroup.visible = false;
@@ -317,6 +360,7 @@ export class SceneManager {
         const nextId = ann ? ann.id : null;
         if (this.hoveredAnnotationId !== nextId) {
           this.hoveredAnnotationId = nextId;
+          this.fibrinLeaderLines.setHoveredId(ann?.scale === 'microscopic' ? nextId : null);
           this.callbacks.onHoverAnnotation?.(ann);
         }
       },
@@ -349,6 +393,11 @@ export class SceneManager {
     (this.interactionAdapter as unknown as { host: { vrHudButtons: THREE.Object3D[] } }).host.vrHudButtons =
       this.webXR.getHudInteractiveButtons();
 
+    // 7b. 3D HRTF Spatialized Thrombus-Pulse Audio Manager & Stereo-Safe VR Center Reticle
+    this.spatialAudio = new ThrombusSpatialAudioManager();
+    this.vrCenterReticle = new VRCenterReticle();
+    this.scene.add(this.vrCenterReticle.group);
+
     // 8. Interaction & Parallax Listeners
     this.setupPointerControls(container);
 
@@ -364,12 +413,21 @@ export class SceneManager {
     for (const ann of CLOT_ANNOTATIONS) {
       const group = new THREE.Group();
       group.name = `Hotspot_${ann.id}`;
-      group.position.set(...ann.position);
+      const snappedMicroPos =
+        ann.scale === 'microscopic'
+          ? this.fibrinLeaderLines.getAnchorLocalPosition(ann.id)
+          : null;
+      if (snappedMicroPos) {
+        group.position.copy(snappedMicroPos);
+      } else {
+        group.position.set(...ann.position);
+      }
       group.userData = { annotationId: ann.id, scale: ann.scale };
 
       const color = new THREE.Color(ann.colorHex || '#e6b65c');
+      const isMicroscopicLeaderDriven = ann.scale === 'microscopic';
 
-      // 1. Center pulsing core
+      // 1. Center pulsing core (hidden for microscopic scale where FibrinLeaderLineManager renders surface pins)
       const coreGeo = new THREE.SphereGeometry(0.12, 16, 16);
       const coreMat = new THREE.MeshBasicMaterial({
         color,
@@ -378,6 +436,7 @@ export class SceneManager {
       });
       const coreMesh = new THREE.Mesh(coreGeo, coreMat);
       coreMesh.name = 'HotspotCore';
+      coreMesh.visible = !isMicroscopicLeaderDriven;
       group.add(coreMesh);
 
       // 2. Animated breathing beacon ring
@@ -391,6 +450,7 @@ export class SceneManager {
       });
       const ringMesh = new THREE.Mesh(ringGeo, ringMat);
       ringMesh.name = 'HotspotRing';
+      ringMesh.visible = !isMicroscopicLeaderDriven;
       group.add(ringMesh);
 
       // 3. Subtle outer halo disc
@@ -404,9 +464,10 @@ export class SceneManager {
       });
       const haloMesh = new THREE.Mesh(haloGeo, haloMat);
       haloMesh.name = 'HotspotHalo';
+      haloMesh.visible = !isMicroscopicLeaderDriven;
       group.add(haloMesh);
 
-      // 4. Hit target (invisible larger sphere for easy clicking/tapping)
+      // 4. Hit target (invisible larger sphere for easy clicking/tapping on 3D anchors)
       const hitGeo = new THREE.SphereGeometry(0.65, 12, 12);
       const hitMat = new THREE.MeshBasicMaterial({ visible: false });
       const hitMesh = new THREE.Mesh(hitGeo, hitMat);
@@ -1008,7 +1069,10 @@ export class SceneManager {
         this.mouseVec2.x = ((clientX - rect.left) / rect.width) * 2 - 1;
         this.mouseVec2.y = -((clientY - rect.top) / rect.height) * 2 + 1;
         const hoverRes = this.interactionAdapter.handleHoverRay(this.mouseVec2, this.camera);
-        const anatomicalHover = this.interactionAdapter.resolveAnatomicalHover(this.mouseVec2, this.camera);
+        const anatomicalHover =
+          hoverRes.kind === 'hotspot' && this.currentScale === 'microscopic'
+            ? null
+            : this.interactionAdapter.resolveAnatomicalHover(this.mouseVec2, this.camera);
 
         if (anatomicalHover) {
           this.applyHoveredStructure(
@@ -1158,6 +1222,13 @@ export class SceneManager {
 
     this.currentScale = scale;
 
+    if (scale !== 'microscopic' && this.activeAnnotationId) {
+      const activeAnn = CLOT_ANNOTATIONS.find((a) => a.id === this.activeAnnotationId);
+      if (activeAnn?.scale === 'microscopic') {
+        this.selectAnnotation(null);
+      }
+    }
+
     // Visibility blending — thoracic group always hidden
     this.thoracicGroup.visible = false;
     this.microscopicChamber.root.visible = this.progress < 0.42;
@@ -1195,6 +1266,7 @@ export class SceneManager {
 
     if (effectiveScale === 'industrialCutaway') {
       this.currentScale = 'industrialCutaway';
+      this.selectAnnotation(null);
       this.microscopicChamber.root.visible = false;
       this.vesselCutawayGroup.visible = false;
       this.embolusMacroMesh.visible = false;
@@ -1406,9 +1478,34 @@ export class SceneManager {
     this.annotationsGroup.visible = layers.annotations;
   }
 
+  public setSidebarCollapsed(collapsed: boolean): void {
+    this.isSidebarCollapsed = collapsed;
+  }
+
+  public hoverFibrinAnnotation(id: string | null): void {
+    this.hoveredAnnotationId = id;
+    this.fibrinLeaderLines.setHoveredId(id);
+  }
+
+  public selectFibrinAnnotation(id: string | null, focusCamera = true): void {
+    this.selectAnnotation(id);
+    if (!focusCamera) return;
+
+    if (id) {
+      const anchor = this.fibrinLeaderLines.getAnchorLocalPosition(id);
+      if (anchor) {
+        this.targetLookAt.copy(anchor);
+        this.spherical.radius = Math.min(this.spherical.radius, 9.2);
+      }
+    } else if (this.currentScale === 'microscopic') {
+      this.targetLookAt.set(0, 0, 0);
+    }
+  }
+
   public selectAnnotation(id: string | null): void {
     this.activeAnnotationId = id;
     const ann = id ? CLOT_ANNOTATIONS.find((a) => a.id === id) || null : null;
+    this.fibrinLeaderLines.setSelectedId(ann?.scale === 'microscopic' ? ann.id : null);
     this.callbacks.onSelectAnnotation?.(ann);
   }
 
@@ -1424,7 +1521,12 @@ export class SceneManager {
         this.setProgress(0.12);
         this.callbacks.onProgressChange?.(0.12);
       }
-      this.targetLookAt.set(...ann.position);
+      const snapped = this.fibrinLeaderLines.getAnchorLocalPosition(id);
+      if (snapped) {
+        this.targetLookAt.copy(snapped);
+      } else {
+        this.targetLookAt.set(...ann.position);
+      }
       this.spherical.radius = 8.5;
     } else {
       if (this.progress < 0.20 || this.progress > 0.75) {
@@ -1436,10 +1538,50 @@ export class SceneManager {
     }
   }
 
+  public setDOFFocusRange(rangeUm: number): void {
+    this.dofFocusRangeUm = THREE.MathUtils.clamp(Math.round(rangeUm * 10) / 10, 5, 50);
+    if (this.dofFocusRangeUm < 49.5 && !this.isSoftwareGl && !this.dofComposer) {
+      this.initDOFComposer();
+    }
+  }
+
+  public getDOFFocusRange(): number {
+    return this.dofFocusRangeUm;
+  }
+
+  private initDOFComposer(): void {
+    if (this.dofComposer || this.isSoftwareGl) return;
+    const width = Math.max(1, this.container.clientWidth);
+    const height = Math.max(1, this.container.clientHeight);
+    const composer = new EffectComposer(this.renderer);
+    composer.setPixelRatio(this.renderer.getPixelRatio());
+    composer.setSize(width, height);
+
+    const renderPass = new RenderPass(this.scene, this.camera);
+    const bokehPass = new BokehPass(this.scene, this.camera, {
+      focus: Math.max(1, this.camera.position.distanceTo(this.currentLookAt)),
+      aperture: 0.0005,
+      maxblur: 0.006,
+    });
+    const outputPass = new OutputPass();
+
+    composer.addPass(renderPass);
+    composer.addPass(bokehPass);
+    composer.addPass(outputPass);
+
+    this.dofComposer = composer;
+    this.dofBokehPass = bokehPass;
+    this.dofOutputPass = outputPass;
+  }
+
   public resize(width: number, height: number): void {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    if (this.dofComposer) {
+      this.dofComposer.setPixelRatio(this.renderer.getPixelRatio());
+      this.dofComposer.setSize(width, height);
+    }
   }
 
   public setDrugInfusion(active: boolean, isSlowMo = true): void {
@@ -1631,11 +1773,421 @@ export class SceneManager {
       }
     }
 
-    this.renderer.render(this.scene, this.camera);
+    // Dynamic 3D-anchored fibrin leader-line projection at microscopic scale
+    const microLeaderActive =
+      !isPresenting &&
+      this.currentScale === 'microscopic' &&
+      this.microscopicChamber.root.visible &&
+      this.layersVisibility.annotations;
+    this.fibrinLeaderLines.setActive(microLeaderActive);
+    const leaderItems = this.fibrinLeaderLines.update(
+      this.camera,
+      this.container.clientWidth,
+      this.container.clientHeight,
+      this.clock.getElapsedTime(),
+      this.isSidebarCollapsed
+    );
+    if (leaderItems !== null) {
+      this.callbacks.onFibrinLeaderLinesUpdate?.(leaderItems);
+    }
+
+    // Update stereo-safe 3D/2D VR Center Crosshair Reticle before rendering
+    this.updateVRCenterReticle(isPresenting, delta);
+
+    const useDOFPass =
+      !isPresenting &&
+      !this.isSoftwareGl &&
+      this.dofFocusRangeUm < 49.5 &&
+      this.dofComposer !== null &&
+      this.dofBokehPass !== null;
+
+    if (useDOFPass && this.dofComposer && this.dofBokehPass) {
+      const focusDist = Math.max(0.5, this.camera.position.distanceTo(this.currentLookAt));
+      const shallowness = THREE.MathUtils.clamp((50 - this.dofFocusRangeUm) / 45, 0, 1);
+      const scaleNorm = 10.0 / Math.max(4.0, focusDist);
+      const aperture = THREE.MathUtils.lerp(0.00005, 0.0022, shallowness * shallowness) * scaleNorm;
+      const maxblur = THREE.MathUtils.lerp(0.0, 0.0095, shallowness);
+
+      const uniforms = this.dofBokehPass.uniforms as Record<string, { value: number }>;
+      uniforms['focus'].value = focusDist;
+      uniforms['aperture'].value = aperture;
+      uniforms['maxblur'].value = maxblur;
+
+      // Preserve accurate total per-frame draw calls & triangles for VR telemetry
+      const prevAutoReset = this.renderer.info.autoReset;
+      this.renderer.info.autoReset = false;
+      this.renderer.info.reset();
+      this.dofComposer.render();
+      this.renderer.info.autoReset = prevAutoReset;
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
+
+    this.sampleVRTelemetry(isPresenting);
+    this.updateSpatialAudio(isPresenting);
+    this.evaluateVRControllerFibrinHaptics(isPresenting);
+  }
+
+  /**
+   * Raycasts active VR controllers against the fibrin microstructure and thrombus core,
+   * triggering hardware haptic pulses whose intensity and pulse cadence increase smoothly
+   * as the user approaches or targets deeper inside the clot core.
+   */
+  private evaluateVRControllerFibrinHaptics(isPresenting: boolean): void {
+    if (!isPresenting) {
+      if (this.controllerHapticState.size > 0) {
+        this.controllerHapticState.clear();
+      }
+      return;
+    }
+
+    const controllerRays = this.webXR.getActiveControllerRays();
+    if (controllerRays.length === 0) return;
+
+    // Collect visible fibrin microstructure & thrombus core raycast targets
+    const fibrinTargets: THREE.Object3D[] = [];
+    const hotspotTargets: THREE.Object3D[] = [];
+
+    if (this.microscopicChamber.root.visible) {
+      fibrinTargets.push(this.microscopicChamber.root);
+    }
+    if (this.embolusMacroMesh.visible) {
+      fibrinTargets.push(this.embolusMacroMesh);
+    }
+    if (this.layersVisibility.annotations && this.annotationsGroup.visible) {
+      for (const target of this.hotspotHitTargets) {
+        if (target.parent?.visible) {
+          hotspotTargets.push(target);
+        }
+      }
+    }
+
+    if (fibrinTargets.length === 0 && hotspotTargets.length === 0) {
+      this.controllerHapticState.clear();
+      return;
+    }
+
+    // Resolve live world-space clot core centroid & specimen scale
+    this.sceneContainer.getWorldScale(this.tempClotScale);
+    const specimenScale = Math.max(0.01, Math.abs(this.tempClotScale.x));
+
+    let maxCoreRadiusWorld: number;
+    if (this.microscopicChamber.root.visible) {
+      this.microscopicChamber.root.getWorldPosition(this.tempClotCoreWorld);
+      maxCoreRadiusWorld = 2.8 * specimenScale;
+    } else {
+      // Impacted thrombus mesh geometry centroid is translated to (3.5, -1.3, -0.2)
+      this.tempClotCoreWorld.set(3.5, -1.3, -0.2);
+      this.embolusMacroMesh.localToWorld(this.tempClotCoreWorld);
+      maxCoreRadiusWorld = 3.2 * specimenScale;
+    }
+
+    const nowMs = performance.now();
+    this.hapticRaycaster.near = 0.02;
+    this.hapticRaycaster.far = 12.0;
+
+    for (const ray of controllerRays) {
+      let state = this.controllerHapticState.get(ray.slot);
+      if (!state) {
+        state = { wasIntersecting: false, lastPulseMs: 0, lastIntensity: 0 };
+        this.controllerHapticState.set(ray.slot, state);
+      }
+
+      this.hapticRaycaster.set(ray.origin, ray.direction);
+
+      let hitPoint: THREE.Vector3 | null = null;
+      let isHotspotHit = false;
+
+      // 1. Check dense fibrin microstructure annotation anchors first
+      if (hotspotTargets.length > 0) {
+        const hotspotHits = this.hapticRaycaster.intersectObjects(hotspotTargets, false);
+        if (hotspotHits.length > 0) {
+          hitPoint = hotspotHits[0].point;
+          isHotspotHit = true;
+        }
+      }
+
+      // 2. Check fibrin strands, cellular matrix & thrombus core meshes
+      if (!hitPoint && fibrinTargets.length > 0) {
+        const meshHits = this.hapticRaycaster.intersectObjects(fibrinTargets, true);
+        const visibleHit = meshHits.find((h) => h.object.visible);
+        if (visibleHit) {
+          hitPoint = visibleHit.point;
+        }
+      }
+
+      if (!hitPoint) {
+        state.wasIntersecting = false;
+        state.lastIntensity = 0;
+        continue;
+      }
+
+      // Radial depth inside the fibrin matrix / thrombus core [0 = outer edge .. 1 = core center]
+      const hitDistFromCore = hitPoint.distanceTo(this.tempClotCoreWorld);
+      const radialCoreFactor = THREE.MathUtils.clamp(
+        1.0 - hitDistFromCore / Math.max(0.05, maxCoreRadiusWorld),
+        0,
+        1
+      );
+
+      // Physical controller approach distance to clot core in VR meters [0 = far .. 1 = inside core]
+      const controllerDistToCore = ray.origin.distanceTo(this.tempClotCoreWorld);
+      const approachFactor = THREE.MathUtils.clamp(
+        1.0 - (controllerDistToCore - 0.16) / 2.2,
+        0,
+        1
+      );
+
+      const coreCloseness = THREE.MathUtils.clamp(
+        radialCoreFactor * 0.52 + approachFactor * 0.48 + (isHotspotHit ? 0.14 : 0),
+        0,
+        1
+      );
+
+      // Smooth intensity curve from delicate fibrin strand contact (0.14) to dense clot core (0.94)
+      const eased = coreCloseness * coreCloseness * (3 - 2 * coreCloseness);
+      const intensity = THREE.MathUtils.lerp(0.14, 0.94, eased);
+
+      if (!state.wasIntersecting) {
+        // Immediate crisp tactile detent upon entering a fibrin microstructure target
+        const entryDurationMs = Math.round(THREE.MathUtils.lerp(24, 52, eased));
+        this.webXR.pulseControllerHaptics(ray.source, Math.min(1, intensity + 0.08), entryDurationMs);
+        state.wasIntersecting = true;
+        state.lastPulseMs = nowMs;
+        state.lastIntensity = intensity;
+      } else {
+        // Adaptive continuous pulse cadence accelerating as user moves deeper into the clot core
+        const intervalMs = THREE.MathUtils.lerp(205, 82, eased);
+        const intensityDelta = Math.abs(intensity - state.lastIntensity);
+        if (nowMs - state.lastPulseMs >= intervalMs || intensityDelta >= 0.18) {
+          const durationMs = Math.round(THREE.MathUtils.lerp(22, 62, eased));
+          this.webXR.pulseControllerHaptics(ray.source, intensity, durationMs);
+          state.lastPulseMs = nowMs;
+          state.lastIntensity = intensity;
+        }
+      }
+    }
+  }
+
+  private updateVRCenterReticle(isPresenting: boolean, delta: number): void {
+    const diag = this.webXR.getDiagnostics();
+    const isVRActive = isPresenting || diag.isEmulatorActive;
+    const activeCam = isPresenting ? this.renderer.xr.getCamera() : this.camera;
+
+    if (!isVRActive) {
+      this.lastReticleState = 'idle';
+      this.lastReticleLabel = null;
+    } else {
+      // Lightweight center-gaze raycast every 3rd frame to detect fibrin anchor / structure lock
+      this.reticleRaycastFrame = (this.reticleRaycastFrame + 1) % 3;
+      if (this.reticleRaycastFrame === 0) {
+        activeCam.getWorldPosition(this.tempReticleOrigin);
+        activeCam.getWorldQuaternion(this.tempReticleQuat);
+        this.tempReticleDir.set(0, 0, -1).applyQuaternion(this.tempReticleQuat).normalize();
+        this.reticleRaycaster.set(this.tempReticleOrigin, this.tempReticleDir);
+        this.reticleRaycaster.near = 0.05;
+        this.reticleRaycaster.far = 80;
+
+        let nextState: VRReticleTargetState = 'idle';
+        let nextLabel: string | null = null;
+
+        // 1. Prioritize active 3D fibrin/thrombus annotation anchors
+        if (this.layersVisibility.annotations && this.annotationsGroup.visible) {
+          const visibleTargets = this.hotspotHitTargets.filter((t) => t.parent?.visible);
+          if (visibleTargets.length > 0) {
+            const hits = this.reticleRaycaster.intersectObjects(visibleTargets, false);
+            if (hits.length > 0) {
+              const annId = hits[0].object.userData?.annotationId as string | undefined;
+              const ann = annId ? CLOT_ANNOTATIONS.find((a) => a.id === annId) : null;
+              if (ann) {
+                nextState = 'hotspot';
+                nextLabel = ann.title;
+              }
+            }
+          }
+        }
+
+        // 2. Fall back to visible fibrin microstructure or artery/thrombus surface
+        if (nextState === 'idle') {
+          const roots: THREE.Object3D[] = [];
+          if (this.microscopicChamber.root.visible) roots.push(this.microscopicChamber.root);
+          if (this.embolusMacroMesh.visible) roots.push(this.embolusMacroMesh);
+          if (this.vesselCutawayGroup.visible) roots.push(this.vesselCutawayGroup);
+          if (this.industrialCutaway.visible) roots.push(this.industrialCutaway);
+
+          if (roots.length > 0) {
+            const hits = this.reticleRaycaster.intersectObjects(roots, true);
+            const firstHit = hits.find((h) => h.object.visible);
+            if (firstHit) {
+              const match = resolveHoverLabelInfo(firstHit.object);
+              nextState = 'structure';
+              nextLabel =
+                match?.info.clinicalName ||
+                (this.currentScale === 'microscopic' ? 'Fibrin Microstructure' : null);
+            }
+          }
+        }
+
+        this.lastReticleState = nextState;
+        this.lastReticleLabel = nextLabel;
+      }
+    }
+
+    const hudUpdate = this.vrCenterReticle.update({
+      camera: activeCam,
+      isPresenting,
+      isVRActive,
+      targetState: this.lastReticleState,
+      targetLabel: this.lastReticleLabel,
+      delta,
+    });
+
+    if (hudUpdate !== null) {
+      this.callbacks.onVRReticleStateChange?.(hudUpdate);
+    }
+  }
+
+  public unlockSpatialAudio(): Promise<boolean> {
+    return this.spatialAudio.unlock();
+  }
+
+  public toggleSpatialAudioMute(): boolean {
+    return this.spatialAudio.toggleMuted();
+  }
+
+  public setSpatialAudioMuted(muted: boolean): void {
+    this.spatialAudio.setMuted(muted);
+  }
+
+  private updateSpatialAudio(isPresenting: boolean): void {
+    const diag = this.webXR.getDiagnostics();
+    const isVRActive = isPresenting || diag.isEmulatorActive;
+
+    // Anchor 3D HRTF audio source directly onto the impacted fibrin microstructure or thrombus core
+    if (this.currentScale === 'microscopic' || this.microscopicChamber.root.visible) {
+      this.microscopicChamber.root.getWorldPosition(this.tempAudioTargetPos);
+    } else if (this.embolusMacroMesh.visible) {
+      // Geometry centroid of the impacted thrombus mesh is translated to (3.5, -1.3, -0.2)
+      this.tempAudioTargetPos.set(3.5, -1.3, -0.2);
+      this.embolusMacroMesh.localToWorld(this.tempAudioTargetPos);
+    } else {
+      this.industrialCutaway.getWorldPosition(this.tempAudioTargetPos);
+    }
+
+    const listenerCamera = isPresenting ? this.renderer.xr.getCamera() : this.camera;
+    const state = this.spatialAudio.update({
+      listenerCamera,
+      targetWorldPosition: this.tempAudioTargetPos,
+      isVRActive,
+      isPresenting,
+      scale: this.currentScale,
+      flowSpeedScale: this.flowSpeedScale,
+      elapsedSeconds: this.clock.getElapsedTime(),
+    });
+
+    if (state !== null) {
+      this.callbacks.onSpatialAudioStateChange?.(state);
+    }
+  }
+
+  private sampleVRTelemetry(isPresenting: boolean): void {
+    const diag = this.webXR.getDiagnostics();
+    const isActive = isPresenting || diag.isEmulatorActive;
+
+    if (!isActive) {
+      if (this.telemetryWasActive) {
+        this.telemetryWasActive = false;
+        this.telemetryLastTickMs = 0;
+        this.telemetryLastEmitMs = 0;
+        this.telemetryFrameSamples = [];
+        this.callbacks.onVRTelemetryUpdate?.(null);
+      }
+      return;
+    }
+
+    const now = performance.now();
+    if (!this.telemetryWasActive) {
+      this.telemetryWasActive = true;
+      this.telemetryLastTickMs = now;
+      this.telemetryLastEmitMs = 0;
+      this.telemetryFrameSamples = [];
+      return;
+    }
+
+    const dtMs = now - this.telemetryLastTickMs;
+    this.telemetryLastTickMs = now;
+
+    // Ignore anomalous tab-switch pauses > 1s
+    if (dtMs > 0.5 && dtMs < 1000) {
+      this.telemetryFrameSamples.push(dtMs);
+      if (this.telemetryFrameSamples.length > 48) {
+        this.telemetryFrameSamples.shift();
+      }
+    }
+
+    if (now - this.telemetryLastEmitMs < 250 || this.telemetryFrameSamples.length === 0) {
+      return;
+    }
+    this.telemetryLastEmitMs = now;
+
+    let sum = 0;
+    let maxMs = 0;
+    for (let i = 0; i < this.telemetryFrameSamples.length; i++) {
+      const sample = this.telemetryFrameSamples[i];
+      sum += sample;
+      if (sample > maxMs) maxMs = sample;
+    }
+    const avgMs = sum / this.telemetryFrameSamples.length;
+    const fps = Math.round(1000 / Math.max(1, avgMs));
+    const minFps = Math.round(1000 / Math.max(1, maxMs));
+
+    const perfWithMem = performance as Performance & {
+      memory?: { usedJSHeapSize?: number };
+    };
+    const usedHeap = perfWithMem.memory?.usedJSHeapSize;
+    const jsHeapMB =
+      typeof usedHeap === 'number' && Number.isFinite(usedHeap)
+        ? Math.round(usedHeap / (1024 * 1024))
+        : null;
+
+    const sessionKind: VRPerformanceTelemetry['sessionKind'] = isPresenting
+      ? diag.sessionMode === 'immersive-ar'
+        ? 'immersive-ar'
+        : 'immersive-vr'
+      : 'quest-sim';
+
+    const info = this.renderer.info;
+    this.callbacks.onVRTelemetryUpdate?.({
+      fps,
+      minFps,
+      frameTimeMs: Math.round(avgMs * 10) / 10,
+      maxFrameTimeMs: Math.round(maxMs * 10) / 10,
+      frameHistoryMs: this.telemetryFrameSamples.slice(-24).map((v) => Math.round(v * 10) / 10),
+      drawCalls: info.render.calls,
+      triangles: info.render.triangles,
+      geometries: info.memory.geometries,
+      textures: info.memory.textures,
+      pixelRatio: Math.round(this.renderer.getPixelRatio() * 100) / 100,
+      jsHeapMB,
+      sessionKind,
+      scale: this.currentScale,
+      isSoftwareGl: this.isSoftwareGl,
+    });
   }
 
   public dispose(): void {
     this.clearHoveredStructureLabel();
+    this.controllerHapticState.clear();
+    this.fibrinLeaderLines.dispose();
+    this.spatialAudio.dispose();
+    this.scene.remove(this.vrCenterReticle.group);
+    this.vrCenterReticle.dispose();
+    this.dofBokehPass?.dispose();
+    this.dofOutputPass?.dispose();
+    this.dofComposer?.dispose();
+    this.dofBokehPass = null;
+    this.dofOutputPass = null;
+    this.dofComposer = null;
     this.renderer.domElement.removeEventListener('webglcontextlost', this.boundOnContextLost);
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.boundOnContextRestored);
     this.renderer.setAnimationLoop(null);

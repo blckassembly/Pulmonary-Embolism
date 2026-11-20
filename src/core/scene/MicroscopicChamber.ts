@@ -193,4 +193,101 @@ export class MicroscopicChamber {
     this.rbcInstancedMesh.visible = showRBC;
     this.plateletInstancedMesh.visible = showPlatelets;
   }
+
+  /**
+   * Resolves exact local-space 3D attachment points directly on the generated fibrin
+   * microstructure (junction node, platelet instance, erythrocyte instance, and void pore)
+   * so dynamic leader-line annotations anchor authentically to rendered geometry.
+   */
+  public getMicrostructureAnchorPositions(): Record<string, THREE.Vector3> {
+    const anchors: Record<string, THREE.Vector3> = {};
+    const tempMatrix = new THREE.Matrix4();
+    const tempPos = new THREE.Vector3();
+
+    // Helper: pick candidate point closest to a desired compositional quadrant for clear 3D separation
+    const pickBest = (candidates: THREE.Vector3[], ideal: THREE.Vector3, fallback: THREE.Vector3): THREE.Vector3 => {
+      if (candidates.length === 0) return fallback.clone();
+      let best = candidates[0];
+      let bestDist = best.distanceToSquared(ideal);
+      for (let i = 1; i < candidates.length; i++) {
+        const d = candidates[i].distanceToSquared(ideal);
+        if (d < bestDist) {
+          bestDist = d;
+          best = candidates[i];
+        }
+      }
+      return best.clone();
+    };
+
+    // 1. Fibrin Cross-Link Density -> real high-degree junction node in upper-left foreground
+    const junctionCandidates: THREE.Vector3[] = [];
+    for (const node of this.network.nodes) {
+      if (node.nodeType === 'junction') {
+        junctionCandidates.push(new THREE.Vector3(...node.position));
+      }
+    }
+    if (junctionCandidates.length === 0) {
+      for (const node of this.network.nodes) {
+        junctionCandidates.push(new THREE.Vector3(...node.position));
+      }
+    }
+    anchors['fibrin-crosslink'] = pickBest(
+      junctionCandidates,
+      new THREE.Vector3(-1.4, 1.5, 1.2),
+      new THREE.Vector3(-0.65, 1.35, 0.75)
+    );
+
+    // 2. Platelet Aggregation Area -> real stellate platelet instance in upper-right foreground
+    const plateletCandidates: THREE.Vector3[] = [];
+    if (this.plateletInstancedMesh) {
+      for (let i = 0; i < this.plateletCount; i++) {
+        this.plateletInstancedMesh.getMatrixAt(i, tempMatrix);
+        tempPos.setFromMatrixPosition(tempMatrix);
+        plateletCandidates.push(tempPos.clone());
+      }
+    }
+    anchors['platelet-aggregation'] = pickBest(
+      plateletCandidates,
+      new THREE.Vector3(2.1, 0.9, 1.4),
+      new THREE.Vector3(1.75, -0.65, 1.15)
+    );
+
+    // 3. Erythrocyte Entrapment Core -> real entrapped RBC instance in lower-left foreground
+    const rbcCandidates: THREE.Vector3[] = [];
+    if (this.rbcInstancedMesh) {
+      for (let i = 0; i < this.rbcCount; i++) {
+        this.rbcInstancedMesh.getMatrixAt(i, tempMatrix);
+        tempPos.setFromMatrixPosition(tempMatrix);
+        rbcCandidates.push(tempPos.clone());
+      }
+    }
+    anchors['erythrocyte-entrapment'] = pickBest(
+      rbcCandidates,
+      new THREE.Vector3(-2.0, -1.25, 1.1),
+      new THREE.Vector3(-1.65, -1.15, -0.45)
+    );
+
+    // 4. Porous Interstitial Channel -> midpoint of an intact cross-linked fibrin edge in lower-right foreground
+    const nodeMap = new Map(this.network.nodes.map((n) => [n.id, n.position]));
+    const poreCandidates: THREE.Vector3[] = [];
+    for (const edge of this.network.edges) {
+      const a = nodeMap.get(edge.fromNodeId);
+      const b = nodeMap.get(edge.toNodeId);
+      if (!a || !b) continue;
+      poreCandidates.push(
+        new THREE.Vector3(
+          (a[0] + b[0]) * 0.5,
+          (a[1] + b[1]) * 0.5,
+          (a[2] + b[2]) * 0.5
+        )
+      );
+    }
+    anchors['void-pore-channel'] = pickBest(
+      poreCandidates,
+      new THREE.Vector3(1.85, -1.45, 1.1),
+      new THREE.Vector3(0.35, -1.85, 0.85)
+    );
+
+    return anchors;
+  }
 }

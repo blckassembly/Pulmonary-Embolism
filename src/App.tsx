@@ -5,15 +5,26 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { LogOut, X } from 'lucide-react';
+import { LogOut, Volume2, VolumeX, X } from 'lucide-react';
 import { SceneManager } from './core/scene/SceneManager.ts';
-import { ScaleLevel } from './types/biomedical.ts';
-import { DesktopInteractionMode, XRDiagnosticsState } from './types/webxr.ts';
+import { FibrinLeaderLineItem } from './core/scene/FibrinLeaderLineManager.ts';
+import { SpatialAudioState } from './core/audio/ThrombusSpatialAudioManager.ts';
+import { VRReticleHudState } from './core/xr/VRCenterReticle.ts';
+import { ClotAnnotation, ScaleLevel } from './types/biomedical.ts';
+import { DesktopInteractionMode, VRPerformanceTelemetry, XRDiagnosticsState } from './types/webxr.ts';
+import { CLOT_ANNOTATIONS } from './data/clotAnnotations.ts';
 import { SceneHoverLabelState } from './data/anatomicalHoverLabels.ts';
 import { LeftNav } from './components/LeftNav.tsx';
 import { WebXRPanel } from './components/WebXRPanel.tsx';
 import { SceneHoverLabel } from './components/SceneHoverLabel.tsx';
 import { ZoomControlsBar } from './components/ZoomControlsBar.tsx';
+import { FibrinLeaderLineOverlay } from './components/FibrinLeaderLineOverlay.tsx';
+import { VRTelemetryOverlay } from './components/VRTelemetryOverlay.tsx';
+import { VRCenterReticleOverlay } from './components/VRCenterReticleOverlay.tsx';
+
+const MICROSCOPIC_ANNOTATIONS: ClotAnnotation[] = CLOT_ANNOTATIONS.filter(
+  (a) => a.scale === 'microscopic'
+);
 
 const SCALE_STAGE_LABELS: Record<
   ScaleLevel,
@@ -63,17 +74,36 @@ export default function App() {
   const [zoomMultiplier, setZoomMultiplier] = useState(1.0);
   const [isWebGLContextLost, setIsWebGLContextLost] = useState(false);
 
+  // Microscopic Fibrin Dynamic Leader-Line & Clinical Pop-up State
+  const [fibrinLeaderLines, setFibrinLeaderLines] = useState<FibrinLeaderLineItem[]>([]);
+  const [selectedFibrinAnnotation, setSelectedFibrinAnnotation] = useState<ClotAnnotation | null>(null);
+
   // WebAR / WebXR State
   const [isXRSupported, setIsXRSupported] = useState(false);
   const [isXRPresenting, setIsXRPresenting] = useState(false);
   const [isWebXRPanelOpen, setIsWebXRPanelOpen] = useState(false);
   const [xrDiagnostics, setXrDiagnostics] = useState<XRDiagnosticsState | null>(null);
+  const [vrTelemetry, setVrTelemetry] = useState<VRPerformanceTelemetry | null>(null);
+  const [spatialAudioState, setSpatialAudioState] = useState<SpatialAudioState>({
+    active: false,
+    muted: false,
+    unlocked: false,
+    proximity: 0,
+    distanceMeters: 0,
+  });
+  const [dofFocusRangeUm, setDofFocusRangeUm] = useState(50);
+  const [vrReticleState, setVrReticleState] = useState<VRReticleHudState | null>(null);
   const [desktopInteractionMode, setDesktopInteractionMode] = useState<DesktopInteractionMode>('orbit');
 
   // Keep <html> .dark class in sync with active theme
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkTheme);
   }, [isDarkTheme]);
+
+  // Keep SceneManager leader-line layout margins synced with sidebar collapse state
+  useEffect(() => {
+    sceneManagerRef.current?.setSidebarCollapsed(isSidebarCollapsed);
+  }, [isSidebarCollapsed]);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -93,13 +123,31 @@ export default function App() {
       onHoverStructureLabel: (label) => {
         setHoverLabel(label);
       },
+      onSelectAnnotation: (annotation) => {
+        setSelectedFibrinAnnotation(annotation?.scale === 'microscopic' ? annotation : null);
+      },
+      onFibrinLeaderLinesUpdate: (items) => {
+        setFibrinLeaderLines(items);
+      },
       onXRDiagnosticsChange: (diag) => {
         setXrDiagnostics(diag);
         setIsXRSupported(diag.isImmersiveVRSupported === true);
       },
       onXRSessionStateChange: (presenting) => {
         setIsXRPresenting(presenting);
-        if (presenting) setHoverLabel(null);
+        if (presenting) {
+          setHoverLabel(null);
+          setSelectedFibrinAnnotation(null);
+        }
+      },
+      onVRTelemetryUpdate: (telemetry) => {
+        setVrTelemetry(telemetry);
+      },
+      onSpatialAudioStateChange: (state) => {
+        setSpatialAudioState(state);
+      },
+      onVRReticleStateChange: (state) => {
+        setVrReticleState(state);
       },
       onWebGLContextChange: (lost) => {
         setIsWebGLContextLost(lost);
@@ -128,8 +176,19 @@ export default function App() {
   const handleSelectScale = (scale: ScaleLevel) => {
     const next = scale === 'thoracic' ? 'vessel' : scale;
     setCurrentScale(next);
+    if (next !== 'microscopic') {
+      setSelectedFibrinAnnotation(null);
+    }
     sceneManagerRef.current?.setScale(next);
   };
+
+  const handleSelectFibrinAnnotation = useCallback((id: string | null) => {
+    sceneManagerRef.current?.selectFibrinAnnotation(id, true);
+  }, []);
+
+  const handleHoverFibrinAnnotation = useCallback((id: string | null) => {
+    sceneManagerRef.current?.hoverFibrinAnnotation(id);
+  }, []);
 
   const handleToggleTheme = () => {
     const nextTheme = !isDarkTheme;
@@ -159,11 +218,18 @@ export default function App() {
     sceneManagerRef.current?.setDesktopInteractionMode(mode);
   };
 
+  const handleDOFFocusRangeChange = useCallback((rangeUm: number) => {
+    setDofFocusRangeUm(rangeUm);
+    sceneManagerRef.current?.setDOFFocusRange(rangeUm);
+  }, []);
+
   const handleEnterVR = async () => {
+    void sceneManagerRef.current?.unlockSpatialAudio();
     await sceneManagerRef.current?.webXR.enterVR('immersive-vr');
   };
 
   const handleEnterMR = async () => {
+    void sceneManagerRef.current?.unlockSpatialAudio();
     await sceneManagerRef.current?.webXR.enterVR('immersive-ar');
   };
 
@@ -176,10 +242,23 @@ export default function App() {
   }, []);
 
   const handleToggleQuestEmulator = async () => {
+    void sceneManagerRef.current?.unlockSpatialAudio();
     await sceneManagerRef.current?.webXR.toggleMetaQuestEmulator();
   };
 
+  const handleToggleSpatialAudioMute = useCallback(() => {
+    const manager = sceneManagerRef.current;
+    if (!manager) return;
+    if (!spatialAudioState.unlocked && !spatialAudioState.muted) {
+      void manager.unlockSpatialAudio();
+      return;
+    }
+    const nextMuted = manager.toggleSpatialAudioMute();
+    setSpatialAudioState((prev) => ({ ...prev, muted: nextMuted }));
+  }, [spatialAudioState.unlocked, spatialAudioState.muted]);
+
   const handleTeleportIntoThorax = () => {
+    void sceneManagerRef.current?.unlockSpatialAudio();
     sceneManagerRef.current?.teleportIntoThoracicAnatomy();
   };
 
@@ -308,7 +387,7 @@ export default function App() {
       )}
 
       {/* Quiet Bottom-Left Gesture Guide */}
-      {!isXRPresenting && !isWebXRPanelOpen && (
+      {!isXRPresenting && !isWebXRPanelOpen && !isEmulatorActive && (
         <div
           aria-hidden="true"
           className={`hidden lg:flex fixed bottom-5 z-10 pointer-events-none items-center gap-2 text-xs transition-all duration-200 ${
@@ -323,13 +402,29 @@ export default function App() {
           <span className="opacity-40">·</span>
           <span>Scroll or + / − to zoom</span>
           <span className="opacity-40">·</span>
-          <span>Hover anatomy for clinical details</span>
+          <span>
+            {currentScale === 'microscopic'
+              ? 'Click fibrin leader tags for clinical data'
+              : 'Hover anatomy for clinical details'}
+          </span>
         </div>
+      )}
+
+      {/* Dynamic 3D-Anchored Fibrin Leader Lines & Clinical Data Pop-up (Microscopic Scale) */}
+      {currentScale === 'microscopic' && !isXRPresenting && !isWebXRPanelOpen && (
+        <FibrinLeaderLineOverlay
+          items={fibrinLeaderLines}
+          selectedAnnotation={selectedFibrinAnnotation}
+          allMicroscopicAnnotations={MICROSCOPIC_ANNOTATIONS}
+          onSelectAnnotation={handleSelectFibrinAnnotation}
+          onHoverAnnotation={handleHoverFibrinAnnotation}
+          isDarkTheme={isDarkTheme}
+        />
       )}
 
       {/* Floating 3D Clinical Hover Labels */}
       <SceneHoverLabel
-        hoverState={isXRPresenting ? null : hoverLabel}
+        hoverState={isXRPresenting || selectedFibrinAnnotation ? null : hoverLabel}
         isDarkTheme={isDarkTheme}
         isSidebarCollapsed={isSidebarCollapsed}
       />
@@ -369,6 +464,8 @@ export default function App() {
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
         onResetZoom={handleResetZoom}
+        dofFocusRangeUm={dofFocusRangeUm}
+        onDOFFocusRangeChange={handleDOFFocusRangeChange}
         onEnterVR={handleEnterVR}
         onEnterMR={handleEnterMR}
         onExitVR={handleExitVR}
@@ -385,16 +482,71 @@ export default function App() {
         isSidebarCollapsed={isSidebarCollapsed}
       />
 
+      {/* Subtle Fixed-Center VR Crosshair Reticle (2D in Quest Sim preview; 3D stereo-locked in HMD) */}
+      <VRCenterReticleOverlay
+        reticleState={isWebXRPanelOpen ? null : vrReticleState}
+        isDarkTheme={isDarkTheme}
+      />
+
+      {/* Non-Obtrusive Real-Time VR Performance Telemetry Overlay */}
+      {(isXRPresenting || isEmulatorActive) && (
+        <VRTelemetryOverlay
+          telemetry={vrTelemetry}
+          isXRPresenting={isXRPresenting}
+          isSidebarCollapsed={isSidebarCollapsed}
+          isDarkTheme={isDarkTheme}
+        />
+      )}
+
       {/* Always-on-Top VR Simulation Escape Bar (Portaled to body above IWER / WebXR overlays for laptop users) */}
       {(isXRPresenting || isEmulatorActive) &&
         typeof document !== 'undefined' &&
         createPortal(
           <div
             role="region"
-            aria-label="Exit VR Simulation Controls"
+            aria-label="VR Session Controls"
             style={{ zIndex: 2147483647 }}
             className="fixed top-4 right-4 flex items-center gap-2 pointer-events-auto font-sans select-none"
           >
+            {/* Compact 3D Spatial Thrombus-Pulse Audio Toggle & Proximity Indicator */}
+            <button
+              type="button"
+              onClick={handleToggleSpatialAudioMute}
+              aria-pressed={!spatialAudioState.muted}
+              title={
+                spatialAudioState.muted
+                  ? 'Unmute 3D spatial thrombus-pulse audio'
+                  : 'Mute 3D spatial thrombus-pulse audio'
+              }
+              className={`min-h-[44px] px-3 py-2 rounded-lg border-2 shadow-xl text-xs font-bold tracking-[0.06em] uppercase flex items-center gap-2 cursor-pointer transition-colors ${
+                spatialAudioState.muted
+                  ? 'bg-[#141514] text-[#8E8D83] border-[#34362F] hover:border-[#F5D547]'
+                  : 'bg-[#141514] text-[#FAF7EC] border-[#F5D547] hover:bg-[#252721]'
+              }`}
+            >
+              {spatialAudioState.muted ? (
+                <VolumeX className="w-4 h-4 shrink-0 text-[#8E8D83]" />
+              ) : (
+                <Volume2 className="w-4 h-4 shrink-0 text-[#F5D547]" />
+              )}
+              <span className="hidden sm:inline">3D Pulse</span>
+              {/* Subtle 3-bar real-time proximity level meter */}
+              <span aria-hidden="true" className="flex items-end gap-[2px] h-3">
+                {[0.2, 0.5, 0.78].map((threshold, idx) => {
+                  const lit = !spatialAudioState.muted && spatialAudioState.proximity >= threshold;
+                  return (
+                    <span
+                      key={threshold}
+                      style={{ height: `${(idx + 1) * 4}px` }}
+                      className={`w-[2.5px] transition-colors ${
+                        lit ? 'bg-[#F5D547]' : 'bg-[#FAF7EC]/25'
+                      }`}
+                    />
+                  );
+                })}
+              </span>
+            </button>
+
             {isXRPresenting && (
               <button
                 type="button"

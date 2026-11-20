@@ -1579,6 +1579,104 @@ export class WebXRControllerRig {
     this.diagnostics.events = [entry, ...this.diagnostics.events].slice(0, 14);
   }
 
+  /**
+   * Returns live world-space raycast origins & directions for all tracked VR controllers
+   * (with gamepads) during an active WebXR session.
+   */
+  public getActiveControllerRays(): Array<{
+    slot: number;
+    handedness: XRHandedness;
+    source: XRInputSource;
+    origin: THREE.Vector3;
+    direction: THREE.Vector3;
+  }> {
+    if (!this.host.renderer.xr.isPresenting || !this.currentSession) {
+      return [];
+    }
+
+    const rays: Array<{
+      slot: number;
+      handedness: XRHandedness;
+      source: XRInputSource;
+      origin: THREE.Vector3;
+      direction: THREE.Vector3;
+    }> = [];
+
+    const sources = Array.from(this.currentSession.inputSources);
+    for (let i = 0; i < sources.length; i++) {
+      const source = sources[i];
+      if (source.hand || !source.gamepad) continue;
+      const resolved = this.resolveSourceRay(source);
+      if (!resolved) continue;
+      rays.push({
+        slot: i,
+        handedness: source.handedness,
+        source,
+        origin: resolved.origin,
+        direction: resolved.direction,
+      });
+    }
+
+    return rays;
+  }
+
+  /**
+   * Fires a single hardware haptic pulse on a VR controller via WebXR Gamepad
+   * `hapticActuators` or Chromium/Quest `vibrationActuator`.
+   */
+  public pulseControllerHaptics(
+    source: XRInputSource,
+    intensity: number,
+    durationMs: number
+  ): boolean {
+    const gamepad = source.gamepad as
+      | (Gamepad & {
+          hapticActuators?: Array<{ pulse?: (value: number, duration: number) => Promise<boolean> }>;
+          vibrationActuator?: {
+            playEffect?: (
+              type: string,
+              params: {
+                startDelay?: number;
+                duration?: number;
+                weakMagnitude?: number;
+                strongMagnitude?: number;
+              }
+            ) => Promise<string>;
+          };
+        })
+      | null
+      | undefined;
+
+    if (!gamepad) return false;
+
+    const clampedIntensity = THREE.MathUtils.clamp(intensity, 0.02, 1.0);
+    const clampedDuration = THREE.MathUtils.clamp(Math.round(durationMs), 10, 200);
+
+    try {
+      const actuator = gamepad.hapticActuators?.[0];
+      if (actuator && typeof actuator.pulse === 'function') {
+        void Promise.resolve(actuator.pulse(clampedIntensity, clampedDuration)).catch(() => {});
+        return true;
+      }
+
+      if (gamepad.vibrationActuator && typeof gamepad.vibrationActuator.playEffect === 'function') {
+        void Promise.resolve(
+          gamepad.vibrationActuator.playEffect('dual-rumble', {
+            startDelay: 0,
+            duration: clampedDuration,
+            weakMagnitude: Math.min(1, clampedIntensity * 0.72),
+            strongMagnitude: clampedIntensity,
+          })
+        ).catch(() => {});
+        return true;
+      }
+    } catch {
+      return false;
+    }
+
+    return false;
+  }
+
   private emitDiagnostics(force: boolean): void {
     if (force) {
       this.lastDiagnosticsPush = performance.now();

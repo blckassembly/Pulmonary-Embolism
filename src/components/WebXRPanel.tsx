@@ -24,6 +24,7 @@ import {
   Layers,
   ChevronDown,
   ChevronUp,
+  Aperture,
 } from 'lucide-react';
 import { DesktopInteractionMode, XRDiagnosticsState } from '../types/webxr.ts';
 
@@ -37,6 +38,8 @@ interface WebXRPanelProps {
   onZoomIn: () => void;
   onZoomOut: () => void;
   onResetZoom: () => void;
+  dofFocusRangeUm: number;
+  onDOFFocusRangeChange: (rangeUm: number) => void;
   onEnterVR: () => void;
   onEnterMR: () => void;
   onExitVR: () => void;
@@ -61,6 +64,8 @@ export const WebXRPanel: React.FC<WebXRPanelProps> = ({
   onZoomIn,
   onZoomOut,
   onResetZoom,
+  dofFocusRangeUm,
+  onDOFFocusRangeChange,
   onEnterVR,
   onEnterMR,
   onExitVR,
@@ -472,7 +477,84 @@ export const WebXRPanel: React.FC<WebXRPanelProps> = ({
           </div>
         </section>
 
-        {/* 4. Collapsible XR & RATK Technical Diagnostics */}
+        {/* 4. Optical Depth-of-Field (DOF) Focus Range for Fibrin Microstructure Clarity */}
+        <section className="p-5 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <label
+              htmlFor="vr-dof-focus-range"
+              className="text-[10px] font-bold tracking-[0.18em] uppercase flex items-center gap-1.5"
+            >
+              <Aperture className="w-3.5 h-3.5 shrink-0" />
+              <span>DOF FOCUS RANGE</span>
+            </label>
+            <span
+              className={`text-xs font-mono font-semibold tabular-nums ${
+                dofFocusRangeUm < 49.5
+                  ? isDarkTheme
+                    ? 'text-[#F5D547]'
+                    : 'text-[#141514]'
+                  : mutedText
+              }`}
+            >
+              {dofFocusRangeUm >= 49.5 ? '50 µm · Deep' : `${dofFocusRangeUm.toFixed(0)} µm Slice`}
+            </span>
+          </div>
+
+          <div className="space-y-1.5">
+            <input
+              id="vr-dof-focus-range"
+              type="range"
+              min={5}
+              max={50}
+              step={1}
+              value={dofFocusRangeUm}
+              onChange={(e) => onDOFFocusRangeChange(Number(e.target.value))}
+              aria-label="Depth-of-field focus range in micrometers"
+              className={`w-full h-2 rounded-lg cursor-pointer ${
+                isDarkTheme
+                  ? 'bg-[#252721] accent-[#F5D547]'
+                  : 'bg-[#E5DFCD] accent-[#141514]'
+              }`}
+            />
+            <div className={`flex items-center justify-between font-mono text-[10px] tabular-nums ${mutedText}`}>
+              <span>5 µm Macro</span>
+              <span>25 µm Slice</span>
+              <span>50 µm Deep</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { label: 'Shallow', value: 12 },
+              { label: 'Fibrin', value: 24 },
+              { label: 'Deep', value: 50 },
+            ].map((preset) => {
+              const isSelected = Math.abs(dofFocusRangeUm - preset.value) <= 1;
+              return (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => onDOFFocusRangeChange(preset.value)}
+                  className={`min-h-[38px] px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                    isSelected
+                      ? isDarkTheme
+                        ? 'bg-[#F5D547] border-[#F5D547] text-[#141514] font-bold'
+                        : 'bg-[#141514] border-[#141514] text-[#FAF7EC] font-bold'
+                      : secondaryBtn
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <p className={`text-xs leading-relaxed ${mutedText}`}>
+            Auto-locks the focal plane onto the active fibrin depth to sharpen cross-linked strands. Stereo HMD sessions bypass post-DOF to preserve headset frame rate.
+          </p>
+        </section>
+
+        {/* 5. Collapsible XR & RATK Technical Diagnostics */}
         <section className="p-5">
           <button
             type="button"
